@@ -134,7 +134,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
     return Array.from(map.values()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [registeredMembers, tasks]);
 
-  // Selectable people inside Create/Edit modal: registered users first, plus selected or historical names
+  // Selectable people inside Create/Edit modal: only registered Equipe members (plus any selected/custom name on the current task)
   const modalAssigneeOptions = useMemo(() => {
     const map = new Map<string, RegisteredAssigneeOption>();
     const addOption = (name: string, roleLabel?: string) => {
@@ -148,14 +148,13 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
 
     registeredMembers.forEach((m) => addOption(m.name, m.roleLabel));
     selectedAssignees.forEach((name) => addOption(name));
-    tasks.forEach((t) => parseTaskAssignees(t).forEach((name) => addOption(name)));
 
     return Array.from(map.values()).sort((a, b) => {
       if (a.roleLabel && !b.roleLabel) return -1;
       if (!a.roleLabel && b.roleLabel) return 1;
       return a.name.localeCompare(b.name, 'pt-BR');
     });
-  }, [registeredMembers, selectedAssignees, tasks]);
+  }, [registeredMembers, selectedAssignees]);
 
   const filteredTasks = useMemo(() => {
     return tasks
