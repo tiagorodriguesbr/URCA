@@ -28,6 +28,7 @@ import {
   type TransitionTask,
 } from '../types/domain';
 import { getDeadlineBadgeLabel, isUrgentTask } from '../lib/notifications';
+import { getFirestoreErrorMessage } from '../lib/firebase';
 import type { ConfirmDialogState } from './ConfirmActionModal';
 
 export interface RegisteredAssigneeOption {
@@ -285,9 +286,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
       setCategory(createdName);
       setNewCategoryInput('');
     } catch (error) {
-      setCategoryActionError(
-        error instanceof Error ? error.message : 'Não foi possível criar a categoria.'
-      );
+      setCategoryActionError(getFirestoreErrorMessage(error));
     } finally {
       setCategoryBusy(false);
     }
@@ -320,9 +319,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
       setRenamingCategoryId(null);
       setRenameCategoryInput('');
     } catch (error) {
-      setCategoryActionError(
-        error instanceof Error ? error.message : 'Não foi possível alterar a categoria.'
-      );
+      setCategoryActionError(getFirestoreErrorMessage(error));
     } finally {
       setCategoryBusy(false);
     }
