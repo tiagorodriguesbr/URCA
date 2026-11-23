@@ -147,8 +147,12 @@
         "assigneeName": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 80,
-          "description": "Nome do responsável atribuído."
+          "maxLength": 240,
+          "description": "Nomes dos responsáveis atribuídos (separados por vírgula)."
+        },
+        "assigneeNames": {
+          "type": "array",
+          "description": "Lista opcional com os nomes individuais dos responsáveis pela atividade."
         },
         "dueDate": {
           "type": "string",

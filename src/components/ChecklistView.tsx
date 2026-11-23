@@ -8,15 +8,19 @@ import {
   Search,
   Sparkles,
   Trash2,
+  UserPlus,
+  Users,
   X,
 } from 'lucide-react';
 import {
   formatDateBR,
   getTodayIsoDate,
+  parseTaskAssignees,
   TASK_CATEGORIES,
   TASK_PRIORITIES,
   TASK_STATUSES,
   validateTaskPayload,
+  VALIDATION_LIMITS,
   type TaskCategory,
   type TaskPriority,
   type TaskStatus,
@@ -25,8 +29,14 @@ import {
 import { getDeadlineBadgeLabel, isUrgentTask } from '../lib/notifications';
 import type { ConfirmDialogState } from './ConfirmActionModal';
 
+export interface RegisteredAssigneeOption {
+  name: string;
+  roleLabel?: string;
+}
+
 interface ChecklistViewProps {
   tasks: TransitionTask[];
+  registeredMembers: RegisteredAssigneeOption[];
   loading: boolean;
   canEdit: boolean;
   onCreateTask: (input: {
@@ -34,6 +44,7 @@ interface ChecklistViewProps {
     description: string;
     category: TaskCategory;
     assigneeName: string;
+    assigneeNames?: string[];
     dueDate: string;
     status: TaskStatus;
     priority: TaskPriority;
@@ -45,6 +56,7 @@ interface ChecklistViewProps {
       description: string;
       category: TaskCategory;
       assigneeName: string;
+      assigneeNames?: string[];
       dueDate: string;
       status: TaskStatus;
       priority: TaskPriority;
@@ -72,6 +84,7 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
 
 export const ChecklistView: React.FC<ChecklistViewProps> = ({
   tasks,
+  registeredMembers,
   loading,
   canEdit,
   onCreateTask,
@@ -93,7 +106,8 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<TaskCategory>('Operacional');
-  const [assigneeName, setAssigneeName] = useState('Tiago');
+  const [selectedAssignees, setSelectedAssignees] = useState<string[]>([]);
+  const [customAssigneeInput, setCustomAssigneeInput] = useState('');
   const [dueDate, setDueDate] = useState(getTodayIsoDate());
   const [status, setStatus] = useState<TaskStatus>('pendente');
   const [priority, setPriority] = useState<TaskPriority>('media');
@@ -106,19 +120,56 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
     }
   }, [externalOpenCreate, canEdit]);
 
+  // All individual assignee options for the toolbar filter
   const assignees = useMemo(() => {
-    const set = new Set<string>(['Tiago', 'Letícia', 'Gerente de Loja']);
-    tasks.forEach((t) => set.add(t.assigneeName));
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [tasks]);
+    const map = new Map<string, string>();
+    const addName = (raw: string) => {
+      const clean = raw.trim();
+      if (!clean) return;
+      const key = clean.toLowerCase();
+      if (!map.has(key)) map.set(key, clean);
+    };
+    registeredMembers.forEach((m) => addName(m.name));
+    tasks.forEach((t) => parseTaskAssignees(t).forEach(addName));
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [registeredMembers, tasks]);
+
+  // Selectable people inside Create/Edit modal: registered users first, plus selected or historical names
+  const modalAssigneeOptions = useMemo(() => {
+    const map = new Map<string, RegisteredAssigneeOption>();
+    const addOption = (name: string, roleLabel?: string) => {
+      const clean = name.trim();
+      if (!clean) return;
+      const key = clean.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { name: clean, roleLabel });
+      }
+    };
+
+    registeredMembers.forEach((m) => addOption(m.name, m.roleLabel));
+    selectedAssignees.forEach((name) => addOption(name));
+    tasks.forEach((t) => parseTaskAssignees(t).forEach((name) => addOption(name)));
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.roleLabel && !b.roleLabel) return -1;
+      if (!a.roleLabel && b.roleLabel) return 1;
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
+  }, [registeredMembers, selectedAssignees, tasks]);
 
   const filteredTasks = useMemo(() => {
     return tasks
       .filter((t) => {
+        const taskPeople = parseTaskAssignees(t);
         if (statusFilter === 'urgent') return isUrgentTask(t);
         if (statusFilter !== 'all' && t.status !== statusFilter) return false;
         if (categoryFilter !== 'all' && t.category !== categoryFilter) return false;
-        if (assigneeFilter !== 'all' && t.assigneeName !== assigneeFilter) return false;
+        if (
+          assigneeFilter !== 'all' &&
+          !taskPeople.some((p) => p.toLowerCase() === assigneeFilter.toLowerCase())
+        ) {
+          return false;
+        }
         if (searchTerm.trim()) {
           const q = searchTerm.toLowerCase();
           return (
@@ -141,7 +192,8 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
     setTitle('');
     setDescription('');
     setCategory('Operacional');
-    setAssigneeName('Tiago');
+    setSelectedAssignees([]);
+    setCustomAssigneeInput('');
     setDueDate(getTodayIsoDate());
     setStatus('pendente');
     setPriority('alta');
@@ -154,7 +206,8 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
     setTitle(task.title);
     setDescription(task.description);
     setCategory(task.category);
-    setAssigneeName(task.assigneeName);
+    setSelectedAssignees(parseTaskAssignees(task));
+    setCustomAssigneeInput('');
     setDueDate(task.dueDate);
     setStatus(task.status);
     setPriority(task.priority);
@@ -162,13 +215,84 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
     setModalOpen(true);
   }
 
+  function isAssigneeSelected(name: string): boolean {
+    const key = name.trim().toLowerCase();
+    return selectedAssignees.some((item) => item.trim().toLowerCase() === key);
+  }
+
+  function toggleAssignee(name: string) {
+    const clean = name.trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    setSelectedAssignees((prev) => {
+      const exists = prev.some((item) => item.trim().toLowerCase() === key);
+      if (exists) {
+        return prev.filter((item) => item.trim().toLowerCase() !== key);
+      }
+      if (prev.length >= VALIDATION_LIMITS.TASK_ASSIGNEES_MAX_COUNT) {
+        setFormError(
+          `Máximo de ${VALIDATION_LIMITS.TASK_ASSIGNEES_MAX_COUNT} responsáveis por atividade.`
+        );
+        return prev;
+      }
+      setFormError(null);
+      return [...prev, clean];
+    });
+  }
+
+  function handleAddCustomAssignee() {
+    const clean = customAssigneeInput.trim().replace(/,/g, '');
+    if (clean.length < VALIDATION_LIMITS.DISPLAY_NAME_MIN) {
+      setFormError('Informe um nome com pelo menos 2 caracteres.');
+      return;
+    }
+    if (clean.length > VALIDATION_LIMITS.DISPLAY_NAME_MAX) {
+      setFormError(
+        `O nome do responsável deve ter no máximo ${VALIDATION_LIMITS.DISPLAY_NAME_MAX} caracteres.`
+      );
+      return;
+    }
+    if (
+      !isAssigneeSelected(clean) &&
+      selectedAssignees.length >= VALIDATION_LIMITS.TASK_ASSIGNEES_MAX_COUNT
+    ) {
+      setFormError(
+        `Máximo de ${VALIDATION_LIMITS.TASK_ASSIGNEES_MAX_COUNT} responsáveis por atividade.`
+      );
+      return;
+    }
+    setFormError(null);
+    setSelectedAssignees((prev) => {
+      const key = clean.toLowerCase();
+      if (prev.some((item) => item.trim().toLowerCase() === key)) return prev;
+      return [...prev, clean];
+    });
+    setCustomAssigneeInput('');
+  }
+
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const pendingCustom = customAssigneeInput.trim().replace(/,/g, '');
+    const finalAssignees = [...selectedAssignees];
+    if (
+      pendingCustom.length >= VALIDATION_LIMITS.DISPLAY_NAME_MIN &&
+      !finalAssignees.some((item) => item.trim().toLowerCase() === pendingCustom.toLowerCase())
+    ) {
+      finalAssignees.push(pendingCustom);
+    }
+
+    if (finalAssignees.length === 0) {
+      setFormError('Selecione pelo menos um responsável para a atividade.');
+      return;
+    }
+
+    const joinedAssignees = finalAssignees.join(', ');
     const payload = {
       title,
       description,
       category,
-      assigneeName,
+      assigneeName: joinedAssignees,
+      assigneeNames: finalAssignees,
       dueDate,
       status,
       priority,
@@ -187,7 +311,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
           'Revise os dados abaixo. A alteração será gravada no banco de dados e registrada nos logs de auditoria.',
         details: [
           { label: 'Atividade', value: title.trim() },
-          { label: 'Responsável', value: assigneeName.trim() },
+          { label: 'Responsáveis', value: joinedAssignees },
           { label: 'Data Limite', value: formatDateBR(dueDate) },
           { label: 'Status', value: STATUS_LABELS[status] },
         ],
@@ -206,7 +330,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
         details: [
           { label: 'Atividade', value: title.trim() },
           { label: 'Categoria', value: category },
-          { label: 'Responsável', value: assigneeName.trim() },
+          { label: 'Responsáveis', value: joinedAssignees },
           { label: 'Data Limite', value: formatDateBR(dueDate) },
         ],
         confirmLabel: 'Confirmar Inclusão',
@@ -222,6 +346,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   const handleToggleDone = (task: TransitionTask) => {
     if (!canEdit) return;
     const nextStatus: TaskStatus = task.status === 'concluido' ? 'pendente' : 'concluido';
+    const taskAssignees = parseTaskAssignees(task);
     requestConfirmation({
       title:
         nextStatus === 'concluido'
@@ -229,7 +354,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
           : 'Confirmar Reabertura da Atividade',
       description: `Deseja alterar o status de "${task.title}" para ${STATUS_LABELS[nextStatus]}?`,
       details: [
-        { label: 'Responsável', value: task.assigneeName },
+        { label: 'Responsável', value: taskAssignees.join(', ') || task.assigneeName },
         { label: 'Novo Status', value: STATUS_LABELS[nextStatus] },
       ],
       confirmLabel: nextStatus === 'concluido' ? 'Marcar Concluída' : 'Reabrir Tarefa',
@@ -239,7 +364,8 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
           title: task.title,
           description: task.description,
           category: task.category,
-          assigneeName: task.assigneeName,
+          assigneeName: taskAssignees.join(', ') || task.assigneeName,
+          assigneeNames: taskAssignees.length > 0 ? taskAssignees : undefined,
           dueDate: task.dueDate,
           status: nextStatus,
           priority: task.priority,
@@ -256,7 +382,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
         'Esta atividade será removida permanentemente do checklist. O histórico da exclusão permanecerá salvo na auditoria.',
       details: [
         { label: 'Atividade', value: task.title },
-        { label: 'Responsável', value: task.assigneeName },
+        { label: 'Responsável', value: parseTaskAssignees(task).join(', ') || task.assigneeName },
         { label: 'Prazo', value: formatDateBR(task.dueDate) },
       ],
       confirmLabel: 'Excluir Permanentemente',
@@ -426,7 +552,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 text-xs font-medium text-slate-500 dark:text-slate-400">
                   <th className="py-3 px-4">Atividade</th>
-                  <th className="py-3 px-4">Responsável</th>
+                  <th className="py-3 px-4">Responsáveis</th>
                   <th className="py-3 px-4">Prazo Limite</th>
                   <th className="py-3 px-4">Prioridade</th>
                   <th className="py-3 px-4">Status</th>
@@ -436,6 +562,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
                 {filteredTasks.map((task) => {
                   const deadline = getDeadlineBadgeLabel(task);
+                  const taskAssignees = parseTaskAssignees(task);
                   return (
                     <tr
                       key={task.id}
@@ -489,8 +616,17 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                           </div>
                         </div>
                       </td>
-                      <td className="py-3.5 px-4 whitespace-nowrap text-slate-700 dark:text-slate-300">
-                        {task.assigneeName}
+                      <td className="py-3.5 px-4 max-w-[220px] text-xs text-slate-700 dark:text-slate-300">
+                        <div className="flex flex-wrap gap-1">
+                          {taskAssignees.map((person) => (
+                            <span
+                              key={person}
+                              className="inline-block px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 font-medium"
+                            >
+                              {person}
+                            </span>
+                          ))}
+                        </div>
                       </td>
                       <td className="py-3.5 px-4 whitespace-nowrap">
                         <div className="font-mono tabular-nums text-xs text-slate-800 dark:text-slate-200">
@@ -605,29 +741,105 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-                    Responsável *
+              {/* Multi-assignee selection from registered members */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                    <Users className="w-3.5 h-3.5 text-teal-700 dark:text-teal-400" />
+                    Responsáveis * (selecione 1 ou mais)
                   </label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={80}
-                    list="assignee-suggestions"
-                    value={assigneeName}
-                    onChange={(e) => setAssigneeName(e.target.value)}
-                    placeholder="Ex.: Letícia, Tiago, Gerente"
-                    className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
-                  />
-                  <datalist id="assignee-suggestions">
-                    <option value="Tiago" />
-                    <option value="Letícia" />
-                    <option value="Gerente de Loja" />
-                    <option value="Contador" />
-                  </datalist>
+                  <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                    {selectedAssignees.length}{' '}
+                    {selectedAssignees.length === 1 ? 'selecionado' : 'selecionados'}
+                  </span>
                 </div>
 
+                {modalAssigneeOptions.length > 0 && (
+                  <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 divide-y divide-slate-200 dark:divide-slate-800">
+                    {modalAssigneeOptions.map((person) => {
+                      const checked = isAssigneeSelected(person.name);
+                      return (
+                        <button
+                          key={person.name}
+                          type="button"
+                          onClick={() => toggleAssignee(person.name)}
+                          className={`w-full flex items-center justify-between gap-3 px-3.5 py-2.5 text-left text-sm transition-colors ${
+                            checked
+                              ? 'bg-teal-50/80 dark:bg-teal-950/40 text-slate-900 dark:text-slate-100'
+                              : 'hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-700 dark:text-slate-300'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2.5 min-w-0">
+                            <span
+                              className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                                checked
+                                  ? 'bg-teal-700 border-teal-700 text-white'
+                                  : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950'
+                              }`}
+                            >
+                              {checked && <Check className="w-3 h-3" />}
+                            </span>
+                            <span className="font-medium truncate">{person.name}</span>
+                          </span>
+                          {person.roleLabel && (
+                            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
+                              {person.roleLabel}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {selectedAssignees.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {selectedAssignees.map((person) => (
+                      <span
+                        key={person}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-teal-50 dark:bg-teal-950/50 border border-teal-200 dark:border-teal-800 text-xs font-medium text-teal-800 dark:text-teal-200"
+                      >
+                        <span>{person}</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleAssignee(person)}
+                          aria-label={`Remover ${person}`}
+                          className="text-teal-600 dark:text-teal-400 hover:text-teal-900 dark:hover:text-teal-100"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    maxLength={80}
+                    value={customAssigneeInput}
+                    onChange={(e) => setCustomAssigneeInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddCustomAssignee();
+                      }
+                    }}
+                    placeholder="Outro responsável não cadastrado (opcional)..."
+                    className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCustomAssignee}
+                    className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    Adicionar
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
                     Data limite *
@@ -640,9 +852,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                     className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
                   />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
                     Categoria
@@ -659,7 +869,9 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                     ))}
                   </select>
                 </div>
+              </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
                     Prioridade

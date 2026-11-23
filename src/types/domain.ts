@@ -104,6 +104,8 @@ export const VALIDATION_LIMITS = {
   TASK_TITLE_MIN: 2,
   TASK_TITLE_MAX: 140,
   TASK_DESC_MAX: 1000,
+  TASK_ASSIGNEE_MAX: 240,
+  TASK_ASSIGNEES_MAX_COUNT: 10,
   PAYMENT_DESC_MIN: 2,
   PAYMENT_DESC_MAX: 160,
   PAYMENT_AMOUNT_MAX: 10000000,
@@ -167,6 +169,7 @@ export interface TransitionTask {
   description: string;
   category: TaskCategory;
   assigneeName: string;
+  assigneeNames?: string[];
   dueDate: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -288,11 +291,34 @@ export function sanitizeText(value: string, maxLength: number): string {
   return value.trim().slice(0, maxLength);
 }
 
+export function parseTaskAssignees(task: {
+  assigneeName: string;
+  assigneeNames?: string[];
+}): string[] {
+  const source =
+    Array.isArray(task.assigneeNames) && task.assigneeNames.length > 0
+      ? task.assigneeNames
+      : (task.assigneeName || '').split(',');
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of source) {
+    const clean = raw.trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(clean);
+    }
+  }
+  return result;
+}
+
 export function validateTaskPayload(input: {
   title: string;
   description: string;
   category: TaskCategory;
   assigneeName: string;
+  assigneeNames?: string[];
   dueDate: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -305,8 +331,22 @@ export function validateTaskPayload(input: {
   if (input.description.trim().length > VALIDATION_LIMITS.TASK_DESC_MAX) {
     return `A descrição deve ter no máximo ${VALIDATION_LIMITS.TASK_DESC_MAX} caracteres.`;
   }
-  if (assignee.length < VALIDATION_LIMITS.DISPLAY_NAME_MIN || assignee.length > VALIDATION_LIMITS.DISPLAY_NAME_MAX) {
-    return `O responsável deve ter entre ${VALIDATION_LIMITS.DISPLAY_NAME_MIN} e ${VALIDATION_LIMITS.DISPLAY_NAME_MAX} caracteres.`;
+  if (assignee.length < VALIDATION_LIMITS.DISPLAY_NAME_MIN || assignee.length > VALIDATION_LIMITS.TASK_ASSIGNEE_MAX) {
+    return `Selecione ou informe pelo menos um responsável válido (máximo ${VALIDATION_LIMITS.TASK_ASSIGNEE_MAX} caracteres no total).`;
+  }
+  if (input.assigneeNames) {
+    if (
+      input.assigneeNames.length === 0 ||
+      input.assigneeNames.length > VALIDATION_LIMITS.TASK_ASSIGNEES_MAX_COUNT
+    ) {
+      return `Selecione entre 1 e ${VALIDATION_LIMITS.TASK_ASSIGNEES_MAX_COUNT} responsáveis.`;
+    }
+    for (const person of input.assigneeNames) {
+      const clean = person.trim();
+      if (clean.length < VALIDATION_LIMITS.DISPLAY_NAME_MIN || clean.length > VALIDATION_LIMITS.DISPLAY_NAME_MAX) {
+        return `Cada responsável deve ter entre ${VALIDATION_LIMITS.DISPLAY_NAME_MIN} e ${VALIDATION_LIMITS.DISPLAY_NAME_MAX} caracteres.`;
+      }
+    }
   }
   if (!VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.dueDate)) {
     return 'Informe uma data limite válida no formato AAAA-MM-DD.';

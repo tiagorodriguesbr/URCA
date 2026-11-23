@@ -755,6 +755,35 @@ function MainShell() {
     [firebaseUser, userProfile]
   );
 
+  const registeredAssignees = useMemo<Array<{ name: string; roleLabel?: string }>>(() => {
+    const map = new Map<string, { name: string; roleLabel?: string }>();
+    const addPerson = (rawName: string | undefined, roleLabel?: string) => {
+      const clean = (rawName || '').trim();
+      if (clean.length < 2) return;
+      const key = clean.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { name: clean, roleLabel });
+      }
+    };
+
+    teamUsers
+      .filter((u) => u.active)
+      .forEach((u) => addPerson(u.displayName, USER_ROLE_LABELS[normalizeUserRole(u.role)]));
+
+    partners
+      .filter((p) => p.active)
+      .forEach((p) => addPerson(p.displayName, 'Sócio'));
+
+    if (userProfile?.active) {
+      addPerson(
+        userProfile.displayName,
+        USER_ROLE_LABELS[normalizeUserRole(userProfile.role)]
+      );
+    }
+
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  }, [teamUsers, partners, userProfile]);
+
   const requestConfirmation = useCallback((dialog: Omit<ConfirmDialogState, 'open'>) => {
     setConfirmError(null);
     setConfirmDialog({ ...dialog, open: true });
@@ -1229,6 +1258,7 @@ function MainShell() {
           {activeTab === 'checklist' && canViewTab('checklist') && (
             <ChecklistView
               tasks={tasks}
+              registeredMembers={registeredAssignees}
               loading={tasksLoading}
               canEdit={canEditTab('checklist')}
               onCreateTask={async (input) => {

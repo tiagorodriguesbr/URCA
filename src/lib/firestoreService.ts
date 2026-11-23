@@ -16,6 +16,7 @@ import {
   formatMonthKeyBR,
   GERENTE_EDITABLE_TABS,
   GERENTE_VIEWABLE_TABS,
+  parseTaskAssignees,
   sanitizeText,
   USER_ROLE_LABELS,
   validateInventoryItemPayload,
@@ -122,12 +123,27 @@ export async function createTaskWithAudit(
     description: string;
     category: TaskCategory;
     assigneeName: string;
+    assigneeNames?: string[];
     dueDate: string;
     status: TaskStatus;
     priority: TaskPriority;
   }
 ): Promise<string> {
-  const err = validateTaskPayload(input);
+  const normalizedAssignees = parseTaskAssignees({
+    assigneeName: input.assigneeName,
+    assigneeNames: input.assigneeNames,
+  }).map((name) => sanitizeText(name, VALIDATION_LIMITS.DISPLAY_NAME_MAX));
+
+  const resolvedAssigneeName = sanitizeText(
+    normalizedAssignees.length > 0 ? normalizedAssignees.join(', ') : input.assigneeName,
+    VALIDATION_LIMITS.TASK_ASSIGNEE_MAX
+  );
+
+  const err = validateTaskPayload({
+    ...input,
+    assigneeName: resolvedAssigneeName,
+    assigneeNames: normalizedAssignees.length > 0 ? normalizedAssignees : undefined,
+  });
   if (err) throw new Error(err);
 
   const taskRef = doc(collection(db, 'tasks'));
@@ -142,7 +158,8 @@ export async function createTaskWithAudit(
     title,
     description: sanitizeText(input.description, VALIDATION_LIMITS.TASK_DESC_MAX),
     category: input.category,
-    assigneeName: sanitizeText(input.assigneeName, VALIDATION_LIMITS.DISPLAY_NAME_MAX),
+    assigneeName: resolvedAssigneeName,
+    assigneeNames: normalizedAssignees,
     dueDate: input.dueDate,
     status: input.status,
     priority: input.priority,
@@ -159,9 +176,17 @@ export async function createTaskWithAudit(
       entityType: 'task',
       entityId: taskRef.id,
       action: 'create',
-      summary: `Criada atividade "${title}" para ${input.assigneeName} (prazo ${input.dueDate})`,
+      summary: `Criada atividade "${title}" para ${resolvedAssigneeName} (prazo ${input.dueDate})`,
       actor,
-      changedFields: ['title', 'category', 'assigneeName', 'dueDate', 'status', 'priority'],
+      changedFields: [
+        'title',
+        'category',
+        'assigneeName',
+        'assigneeNames',
+        'dueDate',
+        'status',
+        'priority',
+      ],
     })
   );
 
@@ -181,12 +206,27 @@ export async function updateTaskWithAudit(
     description: string;
     category: TaskCategory;
     assigneeName: string;
+    assigneeNames?: string[];
     dueDate: string;
     status: TaskStatus;
     priority: TaskPriority;
   }
 ): Promise<void> {
-  const err = validateTaskPayload(updates);
+  const normalizedAssignees = parseTaskAssignees({
+    assigneeName: updates.assigneeName,
+    assigneeNames: updates.assigneeNames,
+  }).map((name) => sanitizeText(name, VALIDATION_LIMITS.DISPLAY_NAME_MAX));
+
+  const resolvedAssigneeName = sanitizeText(
+    normalizedAssignees.length > 0 ? normalizedAssignees.join(', ') : updates.assigneeName,
+    VALIDATION_LIMITS.TASK_ASSIGNEE_MAX
+  );
+
+  const err = validateTaskPayload({
+    ...updates,
+    assigneeName: resolvedAssigneeName,
+    assigneeNames: normalizedAssignees.length > 0 ? normalizedAssignees : undefined,
+  });
   if (err) throw new Error(err);
 
   const taskRef = doc(db, 'tasks', existingTask.id);
@@ -203,7 +243,9 @@ export async function updateTaskWithAudit(
   if (existingTask.title !== title) changedFields.push('title');
   if (existingTask.description !== updates.description.trim()) changedFields.push('description');
   if (existingTask.category !== updates.category) changedFields.push('category');
-  if (existingTask.assigneeName !== updates.assigneeName.trim()) changedFields.push('assigneeName');
+  if (existingTask.assigneeName !== resolvedAssigneeName) {
+    changedFields.push('assigneeName', 'assigneeNames');
+  }
   if (existingTask.dueDate !== updates.dueDate) changedFields.push('dueDate');
   if (existingTask.status !== updates.status) changedFields.push('status');
   if (existingTask.priority !== updates.priority) changedFields.push('priority');
@@ -213,7 +255,8 @@ export async function updateTaskWithAudit(
     title,
     description: sanitizeText(updates.description, VALIDATION_LIMITS.TASK_DESC_MAX),
     category: updates.category,
-    assigneeName: sanitizeText(updates.assigneeName, VALIDATION_LIMITS.DISPLAY_NAME_MAX),
+    assigneeName: resolvedAssigneeName,
+    assigneeNames: normalizedAssignees,
     dueDate: updates.dueDate,
     status: updates.status,
     priority: updates.priority,
@@ -1352,6 +1395,7 @@ export async function importStarterChecklistPack(actor: ActorContext): Promise<v
       description: item.description,
       category: item.category,
       assigneeName: item.assigneeName,
+      assigneeNames: [item.assigneeName],
       dueDate: item.dueDate,
       status: item.status,
       priority: item.priority,

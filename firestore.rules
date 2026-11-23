@@ -142,7 +142,7 @@ service cloud.firestore {
           'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'workspaceId', 'title', 'description', 'category', 'assigneeName',
+          'workspaceId', 'title', 'description', 'category', 'assigneeName', 'assigneeNames',
           'dueDate', 'status', 'priority', 'completedAt',
           'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
         ])
@@ -157,7 +157,16 @@ service cloud.firestore {
           'Jurídico & Contábil',
           'Operacional'
         ]
-        && data.assigneeName is string && data.assigneeName.size() >= 2 && data.assigneeName.size() <= 80
+        && data.assigneeName is string && data.assigneeName.size() >= 2 && data.assigneeName.size() <= 240
+        && (
+          !('assigneeNames' in data)
+          || (
+            data.assigneeNames is list
+            && data.assigneeNames.size() >= 1
+            && data.assigneeNames.size() <= 10
+            && data.assigneeNames[0] is string
+          )
+        )
         && isValidIsoDate(data.dueDate)
         && data.status in ['pendente', 'em_andamento', 'concluido']
         && data.priority in ['baixa', 'media', 'alta', 'urgente']
@@ -428,7 +437,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'title', 'description', 'category', 'assigneeName',
+          'title', 'description', 'category', 'assigneeName', 'assigneeNames',
           'dueDate', 'status', 'priority', 'completedAt', 'updatedAt'
         ])
         && (isFullAdmin() || isGerenteWithEdit('checklist'));
