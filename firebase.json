@@ -4,6 +4,12 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default"
+    }
+  ],
   "hosting": {
     "site": "gestao-urca",
     "public": "dist",

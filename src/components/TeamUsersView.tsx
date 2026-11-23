@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  CheckCircle2,
   Edit3,
+  KeyRound,
+  Mail,
   Plus,
   Shield,
   Trash2,
@@ -23,6 +26,7 @@ import {
 import {
   getFirestoreErrorMessage,
   provisionAuthUserViaSecondaryApp,
+  sendUserPasswordResetEmail,
 } from '../lib/firebase';
 import firebaseConfig from '../../firebase-applet-config.json';
 import type { ConfirmDialogState } from './ConfirmActionModal';
@@ -49,6 +53,11 @@ interface TeamUsersViewProps {
       active: boolean;
     }
   ) => Promise<void>;
+  onUpdateUserCredentials: (input: {
+    targetUid: string;
+    email?: string;
+    password?: string;
+  }) => Promise<void>;
   onDeleteUserProfile: (target: UserProfile) => Promise<void>;
   requestConfirmation: (dialog: Omit<ConfirmDialogState, 'open'>) => void;
 }
@@ -62,6 +71,7 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
   loading,
   onRegisterUserProfile,
   onUpdateUserProfile,
+  onUpdateUserCredentials,
   onDeleteUserProfile,
   requestConfirmation,
 }) => {
@@ -77,6 +87,8 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
   const [active, setActive] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
   const [providerHelp, setProviderHelp] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetFeedback, setResetFeedback] = useState<string | null>(null);
 
   function openCreate() {
     setEditingUser(null);
@@ -89,6 +101,7 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
     setActive(true);
     setFormError(null);
     setProviderHelp(false);
+    setResetFeedback(null);
     setCreateOpen(true);
   }
 
@@ -108,7 +121,24 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
     setActive(u.active);
     setFormError(null);
     setProviderHelp(false);
+    setResetFeedback(null);
     setCreateOpen(true);
+  }
+
+  async function handleSendPasswordReset(targetEmail: string) {
+    setResetBusy(true);
+    setResetFeedback(null);
+    setFormError(null);
+    try {
+      await sendUserPasswordResetEmail(targetEmail);
+      setResetFeedback(
+        `Link oficial de redefinição de senha enviado para ${targetEmail.trim().toLowerCase()}.`
+      );
+    } catch (err) {
+      setFormError(getFirestoreErrorMessage(err));
+    } finally {
+      setResetBusy(false);
+    }
   }
 
   const toggleAllowedTab = (tab: GerenteViewableTab) => {
@@ -169,12 +199,41 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
         ? editableTabs.filter((t) => allowedTabs.includes(t))
         : [...GERENTE_EDITABLE_TABS];
 
+    if (!cleanEmail.includes('@') || cleanEmail.length < 5 || cleanEmail.length > 150) {
+      setFormError('Informe um e-mail válido para o usuário.');
+      return;
+    }
+
     if (editingUser) {
+      if (password && (password.length < 6 || password.length > 128)) {
+        setFormError('A nova senha deve ter entre 6 e 128 caracteres.');
+        return;
+      }
+
+      const emailChanged = cleanEmail !== editingUser.email.trim().toLowerCase();
+      const passwordChanged = password.length > 0;
+      const prevAllowed = editingUser.allowedTabs || [];
+      const prevEditable = editingUser.editableTabs || [];
+      const profileChanged =
+        cleanName !== editingUser.displayName ||
+        role !== normalizeUserRole(editingUser.role) ||
+        active !== editingUser.active ||
+        finalAllowed.join(',') !== prevAllowed.join(',') ||
+        finalEditable.join(',') !== prevEditable.join(',');
+
       requestConfirmation({
-        title: 'Confirmar Alteração de Permissão',
-        description: `Deseja atualizar o nível de acesso e as permissões de ${editingUser.displayName}?`,
+        title: 'Confirmar Alteração de Usuário',
+        description: `Deseja atualizar os dados e acessos de ${editingUser.displayName}?`,
         details: [
           { label: 'Usuário', value: cleanName },
+          {
+            label: 'E-mail',
+            value: emailChanged ? `${cleanEmail} (alterado)` : cleanEmail,
+          },
+          {
+            label: 'Senha',
+            value: passwordChanged ? 'Será redefinida para a nova senha' : 'Mantida atual',
+          },
           { label: 'Nível', value: USER_ROLE_LABELS[role] },
           {
             label: 'Escopo',
@@ -185,23 +244,28 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
         confirmLabel: 'Confirmar Alteração',
         tone: 'primary',
         onConfirm: async () => {
-          await onUpdateUserProfile(editingUser, {
-            displayName: cleanName,
-            role,
-            allowedTabs: finalAllowed,
-            editableTabs: finalEditable,
-            active,
-          });
+          if (emailChanged || passwordChanged) {
+            await onUpdateUserCredentials({
+              targetUid: editingUser.uid,
+              email: emailChanged ? cleanEmail : undefined,
+              password: passwordChanged ? password : undefined,
+            });
+          }
+          if (profileChanged || (!emailChanged && !passwordChanged)) {
+            await onUpdateUserProfile(editingUser, {
+              displayName: cleanName,
+              role,
+              allowedTabs: finalAllowed,
+              editableTabs: finalEditable,
+              active,
+            });
+          }
           setCreateOpen(false);
         },
       });
       return;
     }
 
-    if (!cleanEmail.includes('@') || cleanEmail.length < 5) {
-      setFormError('Informe um e-mail válido para o usuário.');
-      return;
-    }
     if (password.length < 6) {
       setFormError('A senha inicial deve ter pelo menos 6 caracteres (regra do Firebase Auth).');
       return;
@@ -290,7 +354,7 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
             </h2>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Cadastre Sócios, Diretores e Gerentes definindo exatamente quais abas cada gerente pode visualizar e alterar.
+            Cadastre e edite Sócios, Diretores e Gerentes — alterando e-mail, senha e permissões de abas de toda a equipe.
           </p>
         </div>
 
@@ -515,15 +579,55 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
                 <input
                   type="email"
                   required
-                  disabled={Boolean(editingUser)}
+                  maxLength={150}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="usuario@crepsurca.com.br"
-                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 disabled:opacity-60 focus:border-teal-600 focus:outline-none"
+                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
                 />
               </div>
 
-              {!editingUser && (
+              {editingUser ? (
+                <div className="space-y-2.5 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
+                  <div className="space-y-1.5">
+                    <label className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                      <KeyRound className="w-3.5 h-3.5 text-teal-700 dark:text-teal-400" />
+                      Nova senha (opcional)
+                    </label>
+                    <input
+                      type="password"
+                      minLength={6}
+                      maxLength={128}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Deixe em branco para manter a senha atual (mín. 6 caracteres)"
+                      className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
+                    />
+                  </div>
+
+                  {resetFeedback && (
+                    <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>{resetFeedback}</span>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Ou envie um link de redefinição para o e-mail atual:
+                    </span>
+                    <button
+                      type="button"
+                      disabled={resetBusy}
+                      onClick={() => void handleSendPasswordReset(editingUser.email)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors disabled:opacity-60"
+                    >
+                      <Mail className="w-3.5 h-3.5 text-teal-700 dark:text-teal-400" />
+                      {resetBusy ? 'Enviando...' : 'Enviar link de senha'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
                     Senha inicial definida por você *
@@ -532,6 +636,7 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
                     type="password"
                     required
                     minLength={6}
+                    maxLength={128}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Mínimo 6 caracteres"

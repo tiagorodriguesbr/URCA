@@ -4,6 +4,7 @@ import {
   deleteUser,
   getAuth,
   sendEmailVerification,
+  sendPasswordResetEmail,
   signOut,
   updateProfile,
 } from 'firebase/auth';
@@ -16,6 +17,7 @@ import {
   persistentMultipleTabManager,
   type Firestore,
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
@@ -38,6 +40,7 @@ function createFirestoreInstance(): Firestore {
 
 export const db = createFirestoreInstance();
 export const auth = getAuth(app);
+export const functions = getFunctions(app, 'southamerica-east1');
 
 export enum OperationType {
   CREATE = 'create',
@@ -170,5 +173,48 @@ export async function provisionAuthUserViaSecondaryApp(
     } catch (error) {
       console.error('Failed to dispose secondary Firebase App', error);
     }
+  }
+}
+
+export async function sendUserPasswordResetEmail(email: string): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Informe um e-mail válido para enviar a redefinição de senha.');
+  }
+  await sendPasswordResetEmail(auth, cleanEmail);
+}
+
+export async function adminUpdateUserCredentialsViaFunction(input: {
+  targetUid: string;
+  email?: string;
+  password?: string;
+}): Promise<{ ok: boolean; emailUpdated: boolean; passwordUpdated: boolean }> {
+  const callable = httpsCallable<
+    { targetUid: string; email?: string; password?: string },
+    { ok: boolean; emailUpdated: boolean; passwordUpdated: boolean }
+  >(functions, 'adminUpdateUserCredentials');
+
+  try {
+    const res = await callable(input);
+    return res.data;
+  } catch (error: unknown) {
+    const code = (error as { code?: string })?.code || '';
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+
+    if (
+      code === 'functions/not-found' ||
+      code === 'functions/unavailable' ||
+      code === 'functions/internal' && (lower.includes('internal') || lower.includes('failed to fetch') || lower.includes('cors')) ||
+      lower.includes('failed to fetch') ||
+      lower.includes('cors') ||
+      lower.includes('network')
+    ) {
+      throw new Error(
+        'A alteração direta de e-mail/senha de outro usuário requer a Cloud Function "adminUpdateUserCredentials" implantada no Firebase (plano Blaze). Rode "firebase deploy --only functions" ou use "Enviar link de redefinição de senha por e-mail".'
+      );
+    }
+
+    throw new Error(message || 'Não foi possível atualizar e-mail/senha do usuário.');
   }
 }

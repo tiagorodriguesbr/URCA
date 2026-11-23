@@ -37,6 +37,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  adminUpdateUserCredentialsViaFunction,
   auth,
   db,
   getFirestoreErrorMessage,
@@ -1424,6 +1425,9 @@ function MainShell() {
               }}
               onUpdateUserProfile={async (target, updates) => {
                 await updateUserProfileWithAudit(actor, target, updates);
+              }}
+              onUpdateUserCredentials={async (input) => {
+                await adminUpdateUserCredentialsViaFunction(input);
               }}
               onDeleteUserProfile={async (target) => {
                 await deleteUserProfileWithAudit(actor, target);
