@@ -370,7 +370,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center justify-between gap-4">
             <div>
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-slate-100">
-                Divisão Financeira entre Sócios
+                Investimentos por Sócios
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Participação dos sócios selecionados e conta da empresa
