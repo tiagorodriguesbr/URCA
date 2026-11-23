@@ -6,6 +6,7 @@
 3. **Immutable Audit Trail**: `/audit_logs/{logId}` is append-only (`create` allowed for Full Admins or active Managers with at least one `editableTabs` permission, enforcing `actorUid == request.auth.uid` and `timestamp == request.time`; `read` restricted to Full Admins; `update` and `delete` unconditionally denied).
 4. **Inventory Locking & Approval Flow**: `/inventory_periods/{periodId}` enforces `periodId == 'creps-urca_' + monthKey`, starts in `'rascunho'`, can only be moved to `'aprovado'` or `'recusado'` by Full Admins while `'aguardando_validacao'`, and blocks all item/period mutations once `'aprovado'`.
 5. **Temporal, Key & Volumetric Guards**: Every `create` requires `createdAt == request.time`, `updatedAt == request.time`, and `createdByUid == request.auth.uid`. Every `update` preserves immutable identity/creation fields and enforces `updatedAt == request.time`. All document IDs match `^[a-zA-Z0-9_\-]+$` (`<= 128` chars), strings enforce bounds matching `firebase-blueprint.json`, and `keys().hasOnly(...)` rejects shadow fields.
+6. **Payment Receipt Images**: `/payment_receipts/{paymentId}` enforces `existsAfter(/payments/{paymentId})`, restricts MIME/prefix to `image/jpeg` or `image/png` data URLs bounded to `<= 450,000` bytes, and follows the `payments` edit permission (`isFullAdmin()` or `isGerenteWithEdit('payments')`).
 
 ## 2. "Dirty Dozen" Adversarial Payloads
 1. **Unauthenticated Read/Write**: Read `/tasks/t1` with `auth == null` -> `PERMISSION_DENIED`.

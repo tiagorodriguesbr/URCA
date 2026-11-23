@@ -54,6 +54,7 @@ import {
   deleteTaskWithAudit,
   deleteUserProfileWithAudit,
   ensureBootstrappedAdminProfile,
+  getPaymentReceipt,
   importStarterChecklistPack,
   reviewInventoryPeriodWithAudit,
   saveInventoryBatchCountsWithAudit,
@@ -1263,6 +1264,7 @@ function MainShell() {
               onDeletePayment={async (payment) => {
                 await deletePaymentWithAudit(actor, payment);
               }}
+              onLoadReceipt={getPaymentReceipt}
               requestConfirmation={requestConfirmation}
               externalOpenCreate={triggerCreatePayment}
               onConsumeExternalOpenCreate={() => setTriggerCreatePayment(false)}

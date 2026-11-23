@@ -30,7 +30,9 @@ import {
   type InventoryPeriod,
   type PaymentCategory,
   type PaymentMethod,
+  type PaymentReceipt,
   type PaymentStatus,
+  type ReceiptImageInput,
   type TaskCategory,
   type TaskPriority,
   type TaskStatus,
@@ -266,6 +268,43 @@ export async function deleteTaskWithAudit(
   }
 }
 
+function sanitizeReceiptImageInput(receipt: ReceiptImageInput): ReceiptImageInput {
+  const fileName =
+    sanitizeText(receipt.fileName, VALIDATION_LIMITS.RECEIPT_ATTACHMENT_NAME_MAX) ||
+    'comprovante.jpg';
+  const validPrefix =
+    receipt.imageDataUrl.startsWith('data:image/jpeg;base64,') ||
+    receipt.imageDataUrl.startsWith('data:image/png;base64,');
+  if (
+    !validPrefix ||
+    (receipt.mimeType !== 'image/jpeg' && receipt.mimeType !== 'image/png') ||
+    receipt.imageDataUrl.length < 30 ||
+    receipt.imageDataUrl.length > VALIDATION_LIMITS.RECEIPT_IMAGE_DATA_URL_MAX
+  ) {
+    throw new Error('Imagem de comprovante inválida ou acima do tamanho permitido.');
+  }
+  return {
+    fileName,
+    mimeType: receipt.mimeType,
+    imageDataUrl: receipt.imageDataUrl,
+    byteSize: receipt.imageDataUrl.length,
+  };
+}
+
+export async function getPaymentReceipt(paymentId: string): Promise<PaymentReceipt | null> {
+  const receiptRef = doc(db, 'payment_receipts', paymentId);
+  try {
+    const snap = await getDoc(receiptRef);
+    if (!snap.exists()) return null;
+    return {
+      id: snap.id,
+      ...(snap.data() as Omit<PaymentReceipt, 'id'>),
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `payment_receipts/${paymentId}`);
+  }
+}
+
 export async function createPaymentWithAudit(
   actor: ActorContext,
   input: {
@@ -278,12 +317,18 @@ export async function createPaymentWithAudit(
     status: PaymentStatus;
     receiptRef: string;
     notes: string;
+    receiptImage?: ReceiptImageInput | null;
   }
 ): Promise<string> {
   const err = validatePaymentPayload(input);
   if (err) throw new Error(err);
 
+  const sanitizedReceipt = input.receiptImage
+    ? sanitizeReceiptImageInput(input.receiptImage)
+    : null;
+
   const paymentRef = doc(collection(db, 'payments'));
+  const receiptRefDoc = doc(db, 'payment_receipts', paymentRef.id);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
 
@@ -301,12 +346,30 @@ export async function createPaymentWithAudit(
     paymentDate: input.paymentDate,
     status: input.status,
     receiptRef: sanitizeText(input.receiptRef, VALIDATION_LIMITS.RECEIPT_REF_MAX),
+    receiptAttachmentName: sanitizedReceipt ? sanitizedReceipt.fileName : '',
     notes: sanitizeText(input.notes, VALIDATION_LIMITS.NOTES_MAX),
     createdByUid: actor.uid,
     createdByName: safeActorName(actor),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+
+  if (sanitizedReceipt) {
+    batch.set(receiptRefDoc, {
+      workspaceId: WORKSPACE_ID,
+      paymentId: paymentRef.id,
+      fileName: sanitizedReceipt.fileName,
+      mimeType: sanitizedReceipt.mimeType,
+      imageDataUrl: sanitizedReceipt.imageDataUrl,
+      byteSize: sanitizedReceipt.byteSize,
+      createdByUid: actor.uid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  const changedFields = ['description', 'amount', 'paidBy', 'category', 'paymentDate', 'status'];
+  if (sanitizedReceipt) changedFields.push('receiptAttachmentName');
 
   batch.set(
     auditRef,
@@ -316,7 +379,7 @@ export async function createPaymentWithAudit(
       action: 'create',
       summary: `Lançado pagamento "${description}" (${formatCurrencyBRL(amount)}) por ${paidBy}`,
       actor,
-      changedFields: ['description', 'amount', 'paidBy', 'category', 'paymentDate', 'status'],
+      changedFields,
       amount,
     })
   );
@@ -342,13 +405,33 @@ export async function updatePaymentWithAudit(
     status: PaymentStatus;
     receiptRef: string;
     notes: string;
+    receiptAction?: 'keep' | 'replace' | 'remove';
+    receiptImage?: ReceiptImageInput | null;
   }
 ): Promise<void> {
   const err = validatePaymentPayload(updates);
   if (err) throw new Error(err);
 
+  const receiptAction = updates.receiptAction ?? 'keep';
+  const sanitizedReceipt =
+    receiptAction === 'replace' && updates.receiptImage
+      ? sanitizeReceiptImageInput(updates.receiptImage)
+      : null;
+
   const paymentRef = doc(db, 'payments', existingPayment.id);
+  const receiptRefDoc = doc(db, 'payment_receipts', existingPayment.id);
   const auditRef = doc(collection(db, 'audit_logs'));
+
+  let receiptExists = false;
+  if (sanitizedReceipt) {
+    try {
+      const snap = await getDoc(receiptRefDoc);
+      receiptExists = snap.exists();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `payment_receipts/${existingPayment.id}`);
+    }
+  }
+
   const batch = writeBatch(db);
 
   const description = sanitizeText(updates.description, VALIDATION_LIMITS.PAYMENT_DESC_MAX);
@@ -365,7 +448,18 @@ export async function updatePaymentWithAudit(
   if (existingPayment.status !== updates.status) changedFields.push('status');
   if (existingPayment.receiptRef !== updates.receiptRef.trim()) changedFields.push('receiptRef');
   if (existingPayment.notes !== updates.notes.trim()) changedFields.push('notes');
+  if (receiptAction === 'replace' && sanitizedReceipt) changedFields.push('receiptAttachmentName');
+  if (receiptAction === 'remove' && existingPayment.receiptAttachmentName) {
+    changedFields.push('receiptAttachmentName');
+  }
   if (changedFields.length === 0) changedFields.push('updatedAt');
+
+  const nextAttachmentName =
+    receiptAction === 'replace' && sanitizedReceipt
+      ? sanitizedReceipt.fileName
+      : receiptAction === 'remove'
+      ? ''
+      : existingPayment.receiptAttachmentName ?? '';
 
   batch.update(paymentRef, {
     description,
@@ -376,9 +470,36 @@ export async function updatePaymentWithAudit(
     paymentDate: updates.paymentDate,
     status: updates.status,
     receiptRef: sanitizeText(updates.receiptRef, VALIDATION_LIMITS.RECEIPT_REF_MAX),
+    receiptAttachmentName: nextAttachmentName,
     notes: sanitizeText(updates.notes, VALIDATION_LIMITS.NOTES_MAX),
     updatedAt: serverTimestamp(),
   });
+
+  if (receiptAction === 'replace' && sanitizedReceipt) {
+    if (receiptExists) {
+      batch.update(receiptRefDoc, {
+        fileName: sanitizedReceipt.fileName,
+        mimeType: sanitizedReceipt.mimeType,
+        imageDataUrl: sanitizedReceipt.imageDataUrl,
+        byteSize: sanitizedReceipt.byteSize,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(receiptRefDoc, {
+        workspaceId: WORKSPACE_ID,
+        paymentId: existingPayment.id,
+        fileName: sanitizedReceipt.fileName,
+        mimeType: sanitizedReceipt.mimeType,
+        imageDataUrl: sanitizedReceipt.imageDataUrl,
+        byteSize: sanitizedReceipt.byteSize,
+        createdByUid: actor.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } else if (receiptAction === 'remove') {
+    batch.delete(receiptRefDoc);
+  }
 
   batch.set(
     auditRef,
@@ -405,10 +526,12 @@ export async function deletePaymentWithAudit(
   payment: TransitionPayment
 ): Promise<void> {
   const paymentRef = doc(db, 'payments', payment.id);
+  const receiptRefDoc = doc(db, 'payment_receipts', payment.id);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
 
   batch.delete(paymentRef);
+  batch.delete(receiptRefDoc);
   batch.set(
     auditRef,
     buildAuditDoc({

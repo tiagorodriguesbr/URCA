@@ -263,6 +263,11 @@
           "type": "string",
           "maxLength": 120
         },
+        "receiptAttachmentName": {
+          "type": "string",
+          "maxLength": 140,
+          "description": "Nome do arquivo de imagem do comprovante anexado (ou vazio)."
+        },
         "notes": {
           "type": "string",
           "maxLength": 600
@@ -300,6 +305,65 @@
         "notes",
         "createdByUid",
         "createdByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PaymentReceipt": {
+      "title": "PaymentReceipt",
+      "description": "Imagem comprimida do comprovante de pagamento (JPEG/PNG) armazenada separadamente para carregamento sob demanda.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "enum": ["creps-urca"]
+        },
+        "paymentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "mimeType": {
+          "type": "string",
+          "enum": ["image/jpeg", "image/png"]
+        },
+        "imageDataUrl": {
+          "type": "string",
+          "minLength": 30,
+          "maxLength": 450000
+        },
+        "byteSize": {
+          "type": "number"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "paymentId",
+        "fileName",
+        "mimeType",
+        "imageDataUrl",
+        "byteSize",
+        "createdByUid",
         "createdAt",
         "updatedAt"
       ]
@@ -589,6 +653,10 @@
     "/payments/{paymentId}": {
       "schema": { "$ref": "#/entities/TransitionPayment" },
       "description": "Pagamentos e custos pré-operacionais realizados pelos sócios."
+    },
+    "/payment_receipts/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentReceipt" },
+      "description": "Comprovantes de pagamento em imagem (JPEG/PNG) carregados sob demanda."
     },
     "/inventory_periods/{periodId}": {
       "schema": { "$ref": "#/entities/InventoryPeriod" },

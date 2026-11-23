@@ -108,6 +108,8 @@ export const VALIDATION_LIMITS = {
   PAYMENT_DESC_MAX: 160,
   PAYMENT_AMOUNT_MAX: 10000000,
   RECEIPT_REF_MAX: 120,
+  RECEIPT_ATTACHMENT_NAME_MAX: 140,
+  RECEIPT_IMAGE_DATA_URL_MAX: 450000,
   NOTES_MAX: 600,
   INVENTORY_NAME_MIN: 1,
   INVENTORY_NAME_MAX: 120,
@@ -187,12 +189,33 @@ export interface TransitionPayment {
   paymentDate: string;
   status: PaymentStatus;
   receiptRef: string;
+  receiptAttachmentName?: string;
   notes: string;
   createdByUid: string;
   createdByName: string;
   createdAt?: unknown;
   updatedAt?: unknown;
   hasPendingWrites?: boolean;
+}
+
+export interface ReceiptImageInput {
+  fileName: string;
+  mimeType: 'image/jpeg' | 'image/png';
+  imageDataUrl: string;
+  byteSize: number;
+}
+
+export interface PaymentReceipt {
+  id: string;
+  workspaceId: typeof WORKSPACE_ID;
+  paymentId: string;
+  fileName: string;
+  mimeType: 'image/jpeg' | 'image/png';
+  imageDataUrl: string;
+  byteSize: number;
+  createdByUid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
 }
 
 export interface InventoryPeriod {

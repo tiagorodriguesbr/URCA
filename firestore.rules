@@ -176,7 +176,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'workspaceId', 'description', 'amount', 'paidBy', 'category',
-          'paymentMethod', 'paymentDate', 'status', 'receiptRef', 'notes',
+          'paymentMethod', 'paymentDate', 'status', 'receiptRef', 'receiptAttachmentName', 'notes',
           'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
         ])
         && data.workspaceId == 'creps-urca'
@@ -196,9 +196,37 @@ service cloud.firestore {
         && isValidIsoDate(data.paymentDate)
         && data.status in ['pago', 'agendado']
         && data.receiptRef is string && data.receiptRef.size() <= 120
+        && (!('receiptAttachmentName' in data) || (data.receiptAttachmentName is string && data.receiptAttachmentName.size() <= 140))
         && data.notes is string && data.notes.size() <= 600
         && isValidId(data.createdByUid)
         && data.createdByName is string && data.createdByName.size() >= 2 && data.createdByName.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPaymentReceipt(data, targetPaymentId) {
+      return data.keys().hasAll([
+          'workspaceId', 'paymentId', 'fileName', 'mimeType', 'imageDataUrl',
+          'byteSize', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'paymentId', 'fileName', 'mimeType', 'imageDataUrl',
+          'byteSize', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && isValidId(data.paymentId)
+        && data.paymentId == targetPaymentId
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 140
+        && data.mimeType in ['image/jpeg', 'image/png']
+        && data.imageDataUrl is string
+        && data.imageDataUrl.size() >= 30
+        && data.imageDataUrl.size() <= 450000
+        && (
+          data.imageDataUrl[0:23] == 'data:image/jpeg;base64,'
+          || data.imageDataUrl[0:22] == 'data:image/png;base64,'
+        )
+        && data.byteSize is number && data.byteSize >= 30 && data.byteSize <= 450000
+        && isValidId(data.createdByUid)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -435,8 +463,43 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'description', 'amount', 'paidBy', 'category', 'paymentMethod',
-          'paymentDate', 'status', 'receiptRef', 'notes', 'updatedAt'
+          'paymentDate', 'status', 'receiptRef', 'receiptAttachmentName', 'notes', 'updatedAt'
         ])
+        && (isFullAdmin() || isGerenteWithEdit('payments'));
+
+      allow delete: if isSignedIn()
+        && isValidId(paymentId)
+        && (isFullAdmin() || isGerenteWithEdit('payments'));
+    }
+
+    // =========================================================================
+    // Collection: /payment_receipts/{paymentId}
+    // =========================================================================
+    match /payment_receipts/{paymentId} {
+      allow get: if isSignedIn() && isValidId(paymentId) && isTeamMember();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
+
+      allow create: if isSignedIn()
+        && isValidId(paymentId)
+        && isValidPaymentReceipt(incoming(), paymentId)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/payments/$(paymentId))
+        && (isFullAdmin() || isGerenteWithEdit('payments'));
+
+      allow update: if isSignedIn()
+        && isValidId(paymentId)
+        && isValidPaymentReceipt(incoming(), paymentId)
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().paymentId == existing().paymentId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'fileName', 'mimeType', 'imageDataUrl', 'byteSize', 'updatedAt'
+        ])
+        && existsAfter(/databases/$(database)/documents/payments/$(paymentId))
         && (isFullAdmin() || isGerenteWithEdit('payments'));
 
       allow delete: if isSignedIn()

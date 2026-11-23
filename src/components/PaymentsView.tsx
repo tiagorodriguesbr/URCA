@@ -1,5 +1,15 @@
-import React, { useMemo, useState } from 'react';
-import { Edit3, Plus, Search, Trash2, X } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import {
+  Download,
+  Edit3,
+  Image as ImageIcon,
+  ImagePlus,
+  Loader2,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   formatCurrencyBRL,
   formatDateBR,
@@ -11,9 +21,17 @@ import {
   type PartnerRecord,
   type PaymentCategory,
   type PaymentMethod,
+  type PaymentReceipt,
   type PaymentStatus,
+  type ReceiptImageInput,
   type TransitionPayment,
 } from '../types/domain';
+import { getFirestoreErrorMessage } from '../lib/firebase';
+import {
+  compressReceiptImageFile,
+  formatFileBytes,
+  type CompressedReceiptImage,
+} from '../lib/imageUtils';
 import type { ConfirmDialogState } from './ConfirmActionModal';
 
 interface PaymentsViewProps {
@@ -31,6 +49,7 @@ interface PaymentsViewProps {
     status: PaymentStatus;
     receiptRef: string;
     notes: string;
+    receiptImage?: ReceiptImageInput | null;
   }) => Promise<void>;
   onUpdatePayment: (
     existing: TransitionPayment,
@@ -44,9 +63,12 @@ interface PaymentsViewProps {
       status: PaymentStatus;
       receiptRef: string;
       notes: string;
+      receiptAction?: 'keep' | 'replace' | 'remove';
+      receiptImage?: ReceiptImageInput | null;
     }
   ) => Promise<void>;
   onDeletePayment: (payment: TransitionPayment) => Promise<void>;
+  onLoadReceipt: (paymentId: string) => Promise<PaymentReceipt | null>;
   requestConfirmation: (dialog: Omit<ConfirmDialogState, 'open'>) => void;
   externalOpenCreate?: boolean;
   onConsumeExternalOpenCreate?: () => void;
@@ -60,6 +82,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   onCreatePayment,
   onUpdatePayment,
   onDeletePayment,
+  onLoadReceipt,
   requestConfirmation,
   externalOpenCreate,
   onConsumeExternalOpenCreate,
@@ -97,6 +120,25 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   const [notes, setNotes] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Receipt image attachment state inside Create/Edit modal
+  const [receiptImage, setReceiptImage] = useState<CompressedReceiptImage | null>(null);
+  const [receiptAction, setReceiptAction] = useState<'keep' | 'replace' | 'remove'>('keep');
+  const [existingReceiptUrl, setExistingReceiptUrl] = useState<string | null>(null);
+  const [existingReceiptName, setExistingReceiptName] = useState<string>('');
+  const [existingReceiptSize, setExistingReceiptSize] = useState<number>(0);
+  const [loadingExistingReceipt, setLoadingExistingReceipt] = useState(false);
+  const [compressingReceipt, setCompressingReceipt] = useState(false);
+  const [receiptUploadError, setReceiptUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeEditIdRef = useRef<string | null>(null);
+
+  // Receipt lightbox preview state
+  const [previewPayment, setPreviewPayment] = useState<TransitionPayment | null>(null);
+  const [previewReceipt, setPreviewReceipt] = useState<PaymentReceipt | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const activePreviewIdRef = useRef<string | null>(null);
+
   React.useEffect(() => {
     if (externalOpenCreate && canEdit) {
       openCreateModal();
@@ -123,6 +165,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
           return (
             p.description.toLowerCase().includes(q) ||
             p.receiptRef.toLowerCase().includes(q) ||
+            (p.receiptAttachmentName || '').toLowerCase().includes(q) ||
             p.notes.toLowerCase().includes(q) ||
             p.paidBy.toLowerCase().includes(q)
           );
@@ -173,7 +216,22 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
     return { cards, filteredTotal };
   }, [payments, partners, filteredPayments]);
 
+  function resetReceiptFormState() {
+    setReceiptImage(null);
+    setReceiptAction('keep');
+    setExistingReceiptUrl(null);
+    setExistingReceiptName('');
+    setExistingReceiptSize(0);
+    setLoadingExistingReceipt(false);
+    setCompressingReceipt(false);
+    setReceiptUploadError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }
+
   function openCreateModal() {
+    activeEditIdRef.current = null;
     setEditingPayment(null);
     setDescription('');
     setAmountInput('');
@@ -186,10 +244,12 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
     setReceiptRef('');
     setNotes('');
     setFormError(null);
+    resetReceiptFormState();
     setModalOpen(true);
   }
 
   function openEditModal(payment: TransitionPayment) {
+    activeEditIdRef.current = payment.id;
     setEditingPayment(payment);
     setDescription(payment.description);
     setAmountInput(String(payment.amount));
@@ -207,15 +267,109 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
     setReceiptRef(payment.receiptRef);
     setNotes(payment.notes);
     setFormError(null);
+    resetReceiptFormState();
     setModalOpen(true);
+
+    if (payment.receiptAttachmentName) {
+      setExistingReceiptName(payment.receiptAttachmentName);
+      setLoadingExistingReceipt(true);
+      void onLoadReceipt(payment.id)
+        .then((rec) => {
+          if (activeEditIdRef.current !== payment.id) return;
+          if (rec) {
+            setExistingReceiptUrl(rec.imageDataUrl);
+            setExistingReceiptName(rec.fileName);
+            setExistingReceiptSize(rec.byteSize);
+          }
+        })
+        .catch((err) => {
+          if (activeEditIdRef.current !== payment.id) return;
+          setReceiptUploadError(
+            `Não foi possível carregar a imagem atual: ${getFirestoreErrorMessage(err)}`
+          );
+        })
+        .finally(() => {
+          if (activeEditIdRef.current === payment.id) {
+            setLoadingExistingReceipt(false);
+          }
+        });
+    }
+  }
+
+  async function handleReceiptFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setReceiptUploadError(null);
+    setCompressingReceipt(true);
+    try {
+      const compressed = await compressReceiptImageFile(file);
+      setReceiptImage(compressed);
+      setReceiptAction('replace');
+    } catch (err) {
+      setReceiptUploadError(
+        err instanceof Error ? err.message : 'Falha ao processar a imagem selecionada.'
+      );
+    } finally {
+      setCompressingReceipt(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  }
+
+  function handleRemoveReceiptInForm() {
+    setReceiptImage(null);
+    setExistingReceiptUrl(null);
+    setExistingReceiptName('');
+    setExistingReceiptSize(0);
+    setReceiptUploadError(null);
+    setReceiptAction('remove');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }
+
+  async function handleOpenReceiptPreview(payment: TransitionPayment) {
+    activePreviewIdRef.current = payment.id;
+    setPreviewPayment(payment);
+    setPreviewReceipt(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+    try {
+      const rec = await onLoadReceipt(payment.id);
+      if (activePreviewIdRef.current !== payment.id) return;
+      if (!rec) {
+        setPreviewError('A imagem deste comprovante não foi encontrada no banco de dados.');
+      } else {
+        setPreviewReceipt(rec);
+      }
+    } catch (err) {
+      if (activePreviewIdRef.current !== payment.id) return;
+      setPreviewError(getFirestoreErrorMessage(err));
+    } finally {
+      if (activePreviewIdRef.current === payment.id) {
+        setPreviewLoading(false);
+      }
+    }
+  }
+
+  function closeReceiptPreview() {
+    activePreviewIdRef.current = null;
+    setPreviewPayment(null);
+    setPreviewReceipt(null);
+    setPreviewError(null);
+    setPreviewLoading(false);
   }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (compressingReceipt) return;
+
     const parsedAmount = Number(amountInput.replace(',', '.'));
     const resolvedPaidBy = paidBy === '__custom__' ? customPaidBy.trim() : paidBy;
 
-    const payload = {
+    const basePayload = {
       description,
       amount: parsedAmount,
       paidBy: resolvedPaidBy,
@@ -226,12 +380,18 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
       receiptRef,
       notes,
     };
-    const err = validatePaymentPayload(payload);
+    const err = validatePaymentPayload(basePayload);
     if (err) {
       setFormError(err);
       return;
     }
     setFormError(null);
+
+    const effectiveReceiptLabel = receiptImage
+      ? receiptImage.fileName
+      : receiptAction === 'remove'
+      ? 'Removido'
+      : existingReceiptName || 'Não anexada';
 
     if (editingPayment) {
       requestConfirmation({
@@ -243,11 +403,16 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
           { label: 'Valor', value: formatCurrencyBRL(parsedAmount) },
           { label: 'Pago por', value: resolvedPaidBy },
           { label: 'Data', value: formatDateBR(paymentDate) },
+          { label: 'Imagem do comprovante', value: effectiveReceiptLabel },
         ],
         confirmLabel: 'Confirmar Alteração',
         tone: 'primary',
         onConfirm: async () => {
-          await onUpdatePayment(editingPayment, payload);
+          await onUpdatePayment(editingPayment, {
+            ...basePayload,
+            receiptAction,
+            receiptImage,
+          });
           setModalOpen(false);
         },
       });
@@ -261,11 +426,15 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
           { label: 'Valor', value: formatCurrencyBRL(parsedAmount) },
           { label: 'Pago por', value: resolvedPaidBy },
           { label: 'Categoria', value: category },
+          { label: 'Imagem do comprovante', value: effectiveReceiptLabel },
         ],
         confirmLabel: 'Confirmar Lançamento',
         tone: 'primary',
         onConfirm: async () => {
-          await onCreatePayment(payload);
+          await onCreatePayment({
+            ...basePayload,
+            receiptImage,
+          });
           setModalOpen(false);
         },
       });
@@ -277,7 +446,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
     requestConfirmation({
       title: 'Confirmar Exclusão de Pagamento',
       description:
-        'Este lançamento será removido da soma financeira. O registro da remoção permanecerá nos logs de auditoria.',
+        'Este lançamento (e eventual comprovante anexado) será removido da soma financeira. O registro da remoção permanecerá nos logs de auditoria.',
       details: [
         { label: 'Descrição', value: payment.description },
         { label: 'Valor', value: formatCurrencyBRL(payment.amount) },
@@ -290,6 +459,13 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
       },
     });
   };
+
+  const activePreviewUrlInForm =
+    receiptImage?.imageDataUrl || (receiptAction === 'keep' ? existingReceiptUrl : null);
+  const activePreviewNameInForm =
+    receiptImage?.fileName || (receiptAction === 'keep' ? existingReceiptName : '');
+  const activePreviewSizeInForm =
+    receiptImage?.byteSize || (receiptAction === 'keep' ? existingReceiptSize : 0);
 
   return (
     <div className="space-y-6">
@@ -437,6 +613,19 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                             <span className="font-mono">Ref: {payment.receiptRef}</span>
                           </>
                         )}
+                        {payment.receiptAttachmentName && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <button
+                              type="button"
+                              onClick={() => void handleOpenReceiptPreview(payment)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-teal-200 dark:border-teal-800 bg-teal-50/80 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 hover:bg-teal-100 dark:hover:bg-teal-900/60 font-medium transition-colors"
+                            >
+                              <ImageIcon className="w-3 h-3" />
+                              Ver comprovante
+                            </button>
+                          </>
+                        )}
                         {payment.hasPendingWrites && (
                           <>
                             <span aria-hidden="true">·</span>
@@ -513,7 +702,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
         </div>
       )}
 
-      {/* Modal */}
+      {/* Create / Edit Modal */}
       {modalOpen && canEdit && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[2px]"
@@ -679,7 +868,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-                  Comprovante / NF (opcional)
+                  Referência do comprovante / NF (opcional)
                 </label>
                 <input
                   type="text"
@@ -689,6 +878,91 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                   placeholder="Ex.: NF-e 00412 ou ID PIX"
                   className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
                 />
+              </div>
+
+              {/* Receipt Image Attachment (JPEG / PNG) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Imagem do comprovante (JPEG ou PNG, opcional)
+                </label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+                  onChange={(e) => void handleReceiptFileChange(e)}
+                  className="hidden"
+                />
+
+                {receiptUploadError && (
+                  <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300">
+                    {receiptUploadError}
+                  </div>
+                )}
+
+                {compressingReceipt ? (
+                  <div className="flex items-center gap-2.5 p-3.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs text-slate-600 dark:text-slate-300">
+                    <Loader2 className="w-4 h-4 animate-spin text-teal-600" />
+                    Otimizando imagem do comprovante...
+                  </div>
+                ) : activePreviewUrlInForm ? (
+                  <div className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950">
+                    <img
+                      src={activePreviewUrlInForm}
+                      alt={activePreviewNameInForm || 'Comprovante'}
+                      className="w-16 h-16 rounded-md object-cover border border-slate-200 dark:border-slate-700 bg-white shrink-0"
+                    />
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <p className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate">
+                        {activePreviewNameInForm || 'comprovante.jpg'}
+                      </p>
+                      {activePreviewSizeInForm > 0 && (
+                        <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                          JPEG otimizado · {formatFileBytes(Math.round(activePreviewSizeInForm * 0.75))}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="text-xs font-medium text-teal-700 dark:text-teal-400 hover:underline"
+                        >
+                          Trocar imagem
+                        </button>
+                        <span className="text-slate-300 dark:text-slate-700">|</span>
+                        <button
+                          type="button"
+                          onClick={handleRemoveReceiptInForm}
+                          className="text-xs font-medium text-red-600 dark:text-red-400 hover:underline"
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : loadingExistingReceipt ? (
+                  <div className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs text-slate-600 dark:text-slate-300">
+                    <span className="inline-flex items-center gap-2 truncate">
+                      <Loader2 className="w-4 h-4 animate-spin text-teal-600 shrink-0" />
+                      Carregando comprovante atual ({existingReceiptName})...
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRemoveReceiptInForm}
+                      className="text-red-600 dark:text-red-400 hover:underline shrink-0"
+                    >
+                      Remover
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full flex items-center justify-center gap-2.5 px-4 py-3.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/60 hover:border-teal-600 hover:bg-teal-50/40 dark:hover:bg-teal-950/20 text-xs text-slate-600 dark:text-slate-300 transition-colors"
+                  >
+                    <ImagePlus className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
+                    <span>Clique para anexar imagem (.jpg, .jpeg ou .png)</span>
+                  </button>
+                )}
               </div>
 
               <div className="space-y-1.5">
@@ -715,12 +989,97 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2.5 rounded-lg bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-700 text-white text-sm font-semibold transition-colors"
+                  disabled={compressingReceipt}
+                  className="px-4 py-2.5 rounded-lg bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-700 text-white text-sm font-semibold transition-colors disabled:opacity-60"
                 >
                   {editingPayment ? 'Revisar Alteração' : 'Revisar Lançamento'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Receipt Image Preview Lightbox */}
+      {previewPayment && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-[2px]"
+          role="dialog"
+          aria-modal="true"
+          onClick={closeReceiptPreview}
+        >
+          <div
+            className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xl max-h-[92vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div className="min-w-0">
+                <h3 className="font-display text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
+                  Comprovante · {previewPayment.description}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {formatDateBR(previewPayment.paymentDate)} · {previewPayment.paidBy} ·{' '}
+                  <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                    {formatCurrencyBRL(previewPayment.amount)}
+                  </span>
+                  {previewPayment.receiptRef ? ` · Ref: ${previewPayment.receiptRef}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeReceiptPreview}
+                aria-label="Fechar comprovante"
+                className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1 flex items-center justify-center bg-slate-100/70 dark:bg-slate-950/80 min-h-[240px]">
+              {previewLoading ? (
+                <div className="flex flex-col items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
+                  <span>Carregando imagem do comprovante...</span>
+                </div>
+              ) : previewError ? (
+                <div className="max-w-md p-4 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300 text-center">
+                  {previewError}
+                </div>
+              ) : previewReceipt ? (
+                <img
+                  src={previewReceipt.imageDataUrl}
+                  alt={previewReceipt.fileName}
+                  className="max-h-[65vh] w-auto max-w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white object-contain shadow-sm"
+                />
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+              <span className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate">
+                {previewReceipt
+                  ? `${previewReceipt.fileName} (${formatFileBytes(Math.round(previewReceipt.byteSize * 0.75))})`
+                  : previewPayment.receiptAttachmentName || ''}
+              </span>
+              <div className="flex items-center gap-2">
+                {previewReceipt && (
+                  <a
+                    href={previewReceipt.imageDataUrl}
+                    download={previewReceipt.fileName}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-700 text-white text-xs font-semibold transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Baixar imagem
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={closeReceiptPreview}
+                  className="px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

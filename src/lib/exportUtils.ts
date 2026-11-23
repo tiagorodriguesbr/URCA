@@ -81,7 +81,8 @@ export function exportToExcel(params: {
     'Forma de Pagamento': p.paymentMethod,
     Status: p.status === 'pago' ? 'Pago' : 'Agendado',
     'Valor (R$)': p.amount,
-    Comprovante: p.receiptRef || '—',
+    Comprovante:
+      p.receiptRef || (p.receiptAttachmentName ? `Imagem: ${p.receiptAttachmentName}` : '—'),
     Observações: p.notes || '—',
   }));
 
