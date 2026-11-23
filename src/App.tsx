@@ -47,15 +47,18 @@ import {
   createInventoryItemWithAudit,
   createInventoryPeriodWithItemsAndAudit,
   createPaymentWithAudit,
+  createTaskCategoryWithAudit,
   createTaskWithAudit,
   createUserProfileWithAudit,
   deleteInventoryItemWithAudit,
   deletePaymentWithAudit,
+  deleteTaskCategoryWithAudit,
   deleteTaskWithAudit,
   deleteUserProfileWithAudit,
   ensureBootstrappedAdminProfile,
   getPaymentReceipt,
   importStarterChecklistPack,
+  renameTaskCategoryWithAudit,
   reviewInventoryPeriodWithAudit,
   saveInventoryBatchCountsWithAudit,
   submitInventoryForValidationWithAudit,
@@ -78,6 +81,7 @@ import {
   GERENTE_VIEWABLE_TABS,
   isFullAdminRole,
   normalizeUserRole,
+  TASK_CATEGORIES,
   USER_ROLE_LABELS,
   WORKSPACE_ID,
   type AuditLog,
@@ -87,6 +91,7 @@ import {
   type InventoryPeriod,
   type PartnerRecord,
   type RealtimeAlert,
+  type TaskCategoryRecord,
   type TransitionPayment,
   type TransitionTask,
   type UserProfile,
@@ -113,6 +118,7 @@ type AppTab =
 
 type FirestoreListenerKey =
   | 'tasks'
+  | 'taskCategories'
   | 'payments'
   | 'partners'
   | 'inventoryPeriods'
@@ -122,6 +128,7 @@ type FirestoreListenerKey =
 
 const FIRESTORE_LISTENER_LABELS: Record<FirestoreListenerKey, string> = {
   tasks: 'Checklist',
+  taskCategories: 'Categorias de atividades',
   payments: 'Pagamentos',
   partners: 'Sócios',
   inventoryPeriods: 'Períodos de inventário',
@@ -193,6 +200,7 @@ function MainShell() {
 
   const [tasks, setTasks] = useState<TransitionTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(true);
+  const [taskCategoriesDocs, setTaskCategoriesDocs] = useState<TaskCategoryRecord[]>([]);
   const [payments, setPayments] = useState<TransitionPayment[]>([]);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
   const [partners, setPartners] = useState<PartnerRecord[]>([]);
@@ -414,6 +422,7 @@ function MainShell() {
   useEffect(() => {
     if (!authReady || !firebaseUser || !userProfile?.active) {
       setTasks([]);
+      setTaskCategoriesDocs([]);
       setPayments([]);
       setPartners([]);
       setInventoryPeriods([]);
@@ -477,6 +486,27 @@ function MainShell() {
         setTasksLoading(false);
         setTasks([]);
         reportListenerError('tasks', error, 'tasks');
+      }
+    );
+
+    clearListenerError('taskCategories');
+    const taskCategoriesQuery = query(
+      collection(db, 'task_categories'),
+      where('workspaceId', '==', WORKSPACE_ID)
+    );
+    const unsubTaskCategories = onSnapshot(
+      taskCategoriesQuery,
+      (snapshot) => {
+        const list: TaskCategoryRecord[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<TaskCategoryRecord, 'id'>),
+        }));
+        setTaskCategoriesDocs(list);
+        clearListenerError('taskCategories');
+      },
+      (error) => {
+        setTaskCategoriesDocs([]);
+        reportListenerError('taskCategories', error, 'task_categories');
       }
     );
 
@@ -711,6 +741,7 @@ function MainShell() {
 
     return () => {
       unsubTasks();
+      unsubTaskCategories();
       unsubPayments();
       unsubPartners();
       unsubInventoryPeriods();
@@ -783,6 +814,22 @@ function MainShell() {
 
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
   }, [teamUsers, partners, userProfile]);
+
+  const effectiveTaskCategories = useMemo<TaskCategoryRecord[]>(() => {
+    if (taskCategoriesDocs.length > 0) {
+      return [...taskCategoriesDocs].sort(
+        (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'pt-BR')
+      );
+    }
+    return TASK_CATEGORIES.map((name, idx) => ({
+      id: `default_${idx}`,
+      workspaceId: WORKSPACE_ID,
+      name,
+      sortOrder: idx,
+      createdByUid: 'system',
+      isVirtualDefault: true,
+    }));
+  }, [taskCategoriesDocs]);
 
   const requestConfirmation = useCallback((dialog: Omit<ConfirmDialogState, 'open'>) => {
     setConfirmError(null);
@@ -1258,6 +1305,7 @@ function MainShell() {
           {activeTab === 'checklist' && canViewTab('checklist') && (
             <ChecklistView
               tasks={tasks}
+              categories={effectiveTaskCategories}
               registeredMembers={registeredAssignees}
               loading={tasksLoading}
               canEdit={canEditTab('checklist')}
@@ -1272,6 +1320,15 @@ function MainShell() {
               }}
               onImportStarter={async () => {
                 await importStarterChecklistPack(actor);
+              }}
+              onCreateCategory={async (name) =>
+                createTaskCategoryWithAudit(actor, name, effectiveTaskCategories)
+              }
+              onRenameCategory={async (target, newName) =>
+                renameTaskCategoryWithAudit(actor, target, newName, effectiveTaskCategories, tasks)
+              }
+              onDeleteCategory={async (target) => {
+                await deleteTaskCategoryWithAudit(actor, target, effectiveTaskCategories);
               }}
               requestConfirmation={requestConfirmation}
               externalOpenCreate={triggerCreateTask}
@@ -1345,6 +1402,7 @@ function MainShell() {
           {activeTab === 'reports' && canViewTab('reports') && (
             <ReportsView
               tasks={tasks}
+              taskCategories={effectiveTaskCategories.map((c) => c.name)}
               payments={payments}
               partners={partners}
               auditLogs={auditLogs}

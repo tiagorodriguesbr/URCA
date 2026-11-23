@@ -22,6 +22,7 @@ import { exportMonthlyPdf, exportToExcel } from '../lib/exportUtils';
 
 interface ReportsViewProps {
   tasks: TransitionTask[];
+  taskCategories?: string[];
   payments: TransitionPayment[];
   partners: PartnerRecord[];
   auditLogs: AuditLog[];
@@ -32,6 +33,7 @@ const SERIES_COLORS = ['#0f766e', '#0284c7', '#d97706', '#475569', '#059669', '#
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
   tasks,
+  taskCategories,
   payments,
   partners,
   auditLogs,
@@ -100,17 +102,32 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   }, [scopedPayments, chartSeriesKeys]);
 
   const taskProgressByArea = useMemo(() => {
-    return TASK_CATEGORIES.map((cat) => {
-      const items = scopedTasks.filter((t) => t.category === cat);
-      const done = items.filter((t) => t.status === 'concluido').length;
-      const pending = items.length - done;
-      return {
-        categoria: cat.replace(' & ', '/'),
-        Concluidas: done,
-        EmAberto: pending,
-      };
-    }).filter((row) => row.Concluidas + row.EmAberto > 0);
-  }, [scopedTasks]);
+    const categoryOrder: string[] = [];
+    const seen = new Set<string>();
+    const addCat = (cat: string) => {
+      const clean = cat.trim();
+      if (!clean || seen.has(clean)) return;
+      seen.add(clean);
+      categoryOrder.push(clean);
+    };
+    (taskCategories && taskCategories.length > 0 ? taskCategories : [...TASK_CATEGORIES]).forEach(
+      addCat
+    );
+    scopedTasks.forEach((t) => addCat(t.category));
+
+    return categoryOrder
+      .map((cat) => {
+        const items = scopedTasks.filter((t) => t.category === cat);
+        const done = items.filter((t) => t.status === 'concluido').length;
+        const pending = items.length - done;
+        return {
+          categoria: cat.replace(' & ', '/'),
+          Concluidas: done,
+          EmAberto: pending,
+        };
+      })
+      .filter((row) => row.Concluidas + row.EmAberto > 0);
+  }, [scopedTasks, taskCategories]);
 
   const partnerSettlement = useMemo(() => {
     const total = scopedPayments.reduce((s, p) => s + p.amount, 0);

@@ -134,15 +134,9 @@
         },
         "category": {
           "type": "string",
-          "enum": [
-            "RH & Equipe",
-            "Sistemas & PDV",
-            "Financeiro & Bancos",
-            "Estoque & Inventário",
-            "Jurídico & Contábil",
-            "Operacional"
-          ],
-          "description": "Área responsável pela atividade."
+          "minLength": 2,
+          "maxLength": 60,
+          "description": "Área ou categoria responsável pela atividade."
         },
         "assigneeName": {
           "type": "string",
@@ -210,6 +204,47 @@
         "completedAt",
         "createdByUid",
         "createdByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TaskCategoryRecord": {
+      "title": "TaskCategoryRecord",
+      "description": "Categorias configuráveis para atividades do checklist de transição.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "enum": ["creps-urca"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "sortOrder": {
+          "type": "number"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "name",
+        "sortOrder",
+        "createdByUid",
         "createdAt",
         "updatedAt"
       ]
@@ -653,6 +688,10 @@
     "/tasks/{taskId}": {
       "schema": { "$ref": "#/entities/TransitionTask" },
       "description": "Atividades e prazos da transição administrativa da loja da Urca."
+    },
+    "/task_categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/TaskCategoryRecord" },
+      "description": "Categorias personalizadas e editáveis do checklist de transição."
     },
     "/payments/{paymentId}": {
       "schema": { "$ref": "#/entities/TransitionPayment" },

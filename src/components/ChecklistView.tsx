@@ -6,6 +6,7 @@ import {
   Edit3,
   Plus,
   Search,
+  Settings2,
   Sparkles,
   Trash2,
   UserPlus,
@@ -16,12 +17,12 @@ import {
   formatDateBR,
   getTodayIsoDate,
   parseTaskAssignees,
-  TASK_CATEGORIES,
   TASK_PRIORITIES,
   TASK_STATUSES,
   validateTaskPayload,
   VALIDATION_LIMITS,
   type TaskCategory,
+  type TaskCategoryRecord,
   type TaskPriority,
   type TaskStatus,
   type TransitionTask,
@@ -36,6 +37,7 @@ export interface RegisteredAssigneeOption {
 
 interface ChecklistViewProps {
   tasks: TransitionTask[];
+  categories: TaskCategoryRecord[];
   registeredMembers: RegisteredAssigneeOption[];
   loading: boolean;
   canEdit: boolean;
@@ -64,6 +66,9 @@ interface ChecklistViewProps {
   ) => Promise<void>;
   onDeleteTask: (task: TransitionTask) => Promise<void>;
   onImportStarter: () => Promise<void>;
+  onCreateCategory: (name: string) => Promise<string>;
+  onRenameCategory: (target: TaskCategoryRecord, newName: string) => Promise<string>;
+  onDeleteCategory: (target: TaskCategoryRecord) => Promise<void>;
   requestConfirmation: (dialog: Omit<ConfirmDialogState, 'open'>) => void;
   externalOpenCreate?: boolean;
   onConsumeExternalOpenCreate?: () => void;
@@ -84,6 +89,7 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
 
 export const ChecklistView: React.FC<ChecklistViewProps> = ({
   tasks,
+  categories,
   registeredMembers,
   loading,
   canEdit,
@@ -91,6 +97,9 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   onUpdateTask,
   onDeleteTask,
   onImportStarter,
+  onCreateCategory,
+  onRenameCategory,
+  onDeleteCategory,
   requestConfirmation,
   externalOpenCreate,
   onConsumeExternalOpenCreate,
@@ -105,7 +114,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [category, setCategory] = useState<TaskCategory>('Operacional');
+  const [category, setCategory] = useState<TaskCategory>(categories[0]?.name || 'Operacional');
   const [selectedAssignees, setSelectedAssignees] = useState<string[]>([]);
   const [customAssigneeInput, setCustomAssigneeInput] = useState('');
   const [dueDate, setDueDate] = useState(getTodayIsoDate());
@@ -113,12 +122,45 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   const [priority, setPriority] = useState<TaskPriority>('media');
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
+  const [newCategoryInput, setNewCategoryInput] = useState('');
+  const [renamingCategoryId, setRenamingCategoryId] = useState<string | null>(null);
+  const [renameCategoryInput, setRenameCategoryInput] = useState('');
+  const [categoryBusy, setCategoryBusy] = useState(false);
+  const [categoryActionError, setCategoryActionError] = useState<string | null>(null);
+
   React.useEffect(() => {
     if (externalOpenCreate && canEdit) {
       openCreateModal();
       onConsumeExternalOpenCreate?.();
     }
   }, [externalOpenCreate, canEdit]);
+
+  const filterCategoryOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    const addCat = (raw: string) => {
+      const clean = raw.trim();
+      if (!clean) return;
+      const key = clean.toLowerCase();
+      if (!map.has(key)) map.set(key, clean);
+    };
+    categories.forEach((c) => addCat(c.name));
+    tasks.forEach((t) => addCat(t.category));
+    return Array.from(map.values());
+  }, [categories, tasks]);
+
+  const modalCategoryOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    const addCat = (raw: string) => {
+      const clean = raw.trim();
+      if (!clean) return;
+      const key = clean.toLowerCase();
+      if (!map.has(key)) map.set(key, clean);
+    };
+    categories.forEach((c) => addCat(c.name));
+    if (category.trim()) addCat(category);
+    return Array.from(map.values());
+  }, [categories, category]);
 
   // All individual assignee options for the toolbar filter
   const assignees = useMemo(() => {
@@ -187,16 +229,25 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   }, [tasks, statusFilter, categoryFilter, assigneeFilter, searchTerm]);
 
   function openCreateModal() {
+    const defaultCategory =
+      categories.find((c) => c.name === 'Operacional')?.name ||
+      categories[0]?.name ||
+      'Operacional';
     setEditingTask(null);
     setTitle('');
     setDescription('');
-    setCategory('Operacional');
+    setCategory(defaultCategory);
     setSelectedAssignees([]);
     setCustomAssigneeInput('');
     setDueDate(getTodayIsoDate());
     setStatus('pendente');
     setPriority('alta');
     setFormError(null);
+    setCategoryManagerOpen(false);
+    setNewCategoryInput('');
+    setRenamingCategoryId(null);
+    setRenameCategoryInput('');
+    setCategoryActionError(null);
     setModalOpen(true);
   }
 
@@ -211,7 +262,108 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
     setStatus(task.status);
     setPriority(task.priority);
     setFormError(null);
+    setCategoryManagerOpen(false);
+    setNewCategoryInput('');
+    setRenamingCategoryId(null);
+    setRenameCategoryInput('');
+    setCategoryActionError(null);
     setModalOpen(true);
+  }
+
+  async function handleAddCategory() {
+    const clean = newCategoryInput.trim();
+    if (clean.length < VALIDATION_LIMITS.TASK_CATEGORY_MIN) {
+      setCategoryActionError(
+        `Informe pelo menos ${VALIDATION_LIMITS.TASK_CATEGORY_MIN} caracteres para a categoria.`
+      );
+      return;
+    }
+    setCategoryBusy(true);
+    setCategoryActionError(null);
+    try {
+      const createdName = await onCreateCategory(clean);
+      setCategory(createdName);
+      setNewCategoryInput('');
+    } catch (error) {
+      setCategoryActionError(
+        error instanceof Error ? error.message : 'Não foi possível criar a categoria.'
+      );
+    } finally {
+      setCategoryBusy(false);
+    }
+  }
+
+  async function handleSaveRenameCategory(target: TaskCategoryRecord) {
+    const clean = renameCategoryInput.trim();
+    if (clean.length < VALIDATION_LIMITS.TASK_CATEGORY_MIN) {
+      setCategoryActionError(
+        `Informe pelo menos ${VALIDATION_LIMITS.TASK_CATEGORY_MIN} caracteres para a categoria.`
+      );
+      return;
+    }
+    if (clean === target.name) {
+      setRenamingCategoryId(null);
+      setRenameCategoryInput('');
+      setCategoryActionError(null);
+      return;
+    }
+    setCategoryBusy(true);
+    setCategoryActionError(null);
+    try {
+      const updatedName = await onRenameCategory(target, clean);
+      if (category === target.name) {
+        setCategory(updatedName);
+      }
+      if (categoryFilter === target.name) {
+        setCategoryFilter(updatedName);
+      }
+      setRenamingCategoryId(null);
+      setRenameCategoryInput('');
+    } catch (error) {
+      setCategoryActionError(
+        error instanceof Error ? error.message : 'Não foi possível alterar a categoria.'
+      );
+    } finally {
+      setCategoryBusy(false);
+    }
+  }
+
+  function handleRequestDeleteCategory(target: TaskCategoryRecord) {
+    if (categories.length <= 1) {
+      setCategoryActionError('Mantenha pelo menos 1 categoria ativa no checklist.');
+      return;
+    }
+    setCategoryActionError(null);
+    const affectedCount = tasks.filter((t) => t.category === target.name).length;
+    const fallbackCategory =
+      categories.find((c) => c.id !== target.id)?.name || 'Operacional';
+
+    requestConfirmation({
+      title: 'Confirmar Exclusão de Categoria',
+      description:
+        affectedCount > 0
+          ? `Esta categoria será removida da lista de seleção. As ${affectedCount} atividade(s) já existentes com esta categoria permanecerão visíveis e poderão ser reclassificadas depois.`
+          : 'Esta categoria será removida da lista de categorias do checklist.',
+      details: [
+        { label: 'Categoria', value: target.name },
+        { label: 'Atividades vinculadas', value: `${affectedCount}` },
+      ],
+      confirmLabel: 'Excluir Categoria',
+      tone: 'danger',
+      onConfirm: async () => {
+        await onDeleteCategory(target);
+        if (category === target.name) {
+          setCategory(fallbackCategory);
+        }
+        if (categoryFilter === target.name) {
+          setCategoryFilter('all');
+        }
+        if (renamingCategoryId === target.id) {
+          setRenamingCategoryId(null);
+          setRenameCategoryInput('');
+        }
+      },
+    });
   }
 
   function isAssigneeSelected(name: string): boolean {
@@ -501,7 +653,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
           className="px-3.5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
         >
           <option value="all">Todas as categorias</option>
-          {TASK_CATEGORIES.map((cat) => (
+          {filterCategoryOptions.map((cat) => (
             <option key={cat} value={cat}>
               {cat}
             </option>
@@ -853,15 +1005,28 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-                    Categoria
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                      Categoria
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCategoryManagerOpen((prev) => !prev);
+                        setCategoryActionError(null);
+                      }}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300"
+                    >
+                      <Settings2 className="w-3 h-3" />
+                      {categoryManagerOpen ? 'Fechar edição' : 'Gerenciar'}
+                    </button>
+                  </div>
                   <select
                     value={category}
                     onChange={(e) => setCategory(e.target.value as TaskCategory)}
                     className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
                   >
-                    {TASK_CATEGORIES.map((c) => (
+                    {modalCategoryOptions.map((c) => (
                       <option key={c} value={c}>
                         {c}
                       </option>
@@ -869,6 +1034,149 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                   </select>
                 </div>
               </div>
+
+              {categoryManagerOpen && (
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950/60 p-3.5 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                      Gerenciar categorias de atividade
+                    </p>
+                    <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                      {categories.length} {categories.length === 1 ? 'categoria' : 'categorias'}
+                    </span>
+                  </div>
+
+                  {categoryActionError && (
+                    <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300">
+                      {categoryActionError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      maxLength={VALIDATION_LIMITS.TASK_CATEGORY_MAX}
+                      value={newCategoryInput}
+                      onChange={(e) => setNewCategoryInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleAddCategory();
+                        }
+                      }}
+                      placeholder="Nova categoria (ex.: Alvarás & Bombeiros)..."
+                      className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={categoryBusy}
+                      onClick={() => void handleAddCategory()}
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-700 text-white text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-60"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Adicionar
+                    </button>
+                  </div>
+
+                  <div className="max-h-44 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-200 dark:divide-slate-800">
+                    {categories.map((cat) => {
+                      const isRenaming = renamingCategoryId === cat.id;
+                      const usageCount = tasks.filter((t) => t.category === cat.name).length;
+                      return (
+                        <div
+                          key={cat.id}
+                          className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                        >
+                          {isRenaming ? (
+                            <div className="flex-1 flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                maxLength={VALIDATION_LIMITS.TASK_CATEGORY_MAX}
+                                value={renameCategoryInput}
+                                onChange={(e) => setRenameCategoryInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void handleSaveRenameCategory(cat);
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    setRenamingCategoryId(null);
+                                    setRenameCategoryInput('');
+                                  }
+                                }}
+                                autoFocus
+                                className="flex-1 px-2.5 py-1.5 rounded border border-teal-500 bg-white dark:bg-slate-950 text-xs text-slate-900 dark:text-slate-100 focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                disabled={categoryBusy}
+                                onClick={() => void handleSaveRenameCategory(cat)}
+                                aria-label={`Salvar nome de ${cat.name}`}
+                                className="p-1.5 rounded bg-teal-700 hover:bg-teal-800 text-white disabled:opacity-60"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={categoryBusy}
+                                onClick={() => {
+                                  setRenamingCategoryId(null);
+                                  setRenameCategoryInput('');
+                                  setCategoryActionError(null);
+                                }}
+                                aria-label="Cancelar edição da categoria"
+                                className="p-1.5 rounded border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="min-w-0 flex items-center gap-2">
+                                <span className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                                  {cat.name}
+                                </span>
+                                <span className="text-[11px] font-mono text-slate-400 shrink-0">
+                                  ({usageCount})
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={categoryBusy}
+                                  onClick={() => {
+                                    setRenamingCategoryId(cat.id);
+                                    setRenameCategoryInput(cat.name);
+                                    setCategoryActionError(null);
+                                  }}
+                                  aria-label={`Renomear categoria ${cat.name}`}
+                                  className="p-1.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={categoryBusy || categories.length <= 1}
+                                  onClick={() => handleRequestDeleteCategory(cat)}
+                                  title={
+                                    categories.length <= 1
+                                      ? 'Mantenha pelo menos 1 categoria ativa'
+                                      : `Excluir ${cat.name}`
+                                  }
+                                  aria-label={`Excluir categoria ${cat.name}`}
+                                  className="p-1.5 rounded text-slate-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-35 disabled:cursor-not-allowed"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">

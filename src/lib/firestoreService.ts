@@ -35,6 +35,7 @@ import {
   type PaymentStatus,
   type ReceiptImageInput,
   type TaskCategory,
+  type TaskCategoryRecord,
   type TaskPriority,
   type TaskStatus,
   type TransitionPayment,
@@ -308,6 +309,232 @@ export async function deleteTaskWithAudit(
     await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `tasks/${task.id}`);
+  }
+}
+
+function normalizeTaskCategoryName(raw: string): string {
+  const clean = sanitizeText(raw, VALIDATION_LIMITS.TASK_CATEGORY_MAX);
+  if (clean.length < VALIDATION_LIMITS.TASK_CATEGORY_MIN) {
+    throw new Error(
+      `Informe um nome de categoria com pelo menos ${VALIDATION_LIMITS.TASK_CATEGORY_MIN} caracteres.`
+    );
+  }
+  return clean;
+}
+
+export async function createTaskCategoryWithAudit(
+  actor: ActorContext,
+  name: string,
+  currentCategories: TaskCategoryRecord[]
+): Promise<string> {
+  const cleanName = normalizeTaskCategoryName(name);
+  const duplicate = currentCategories.some(
+    (c) => c.name.trim().toLowerCase() === cleanName.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error('Já existe uma categoria com este nome.');
+  }
+
+  const batch = writeBatch(db);
+  const needsVirtualSeed =
+    currentCategories.length > 0 && currentCategories.every((c) => c.isVirtualDefault);
+
+  if (needsVirtualSeed) {
+    for (const def of currentCategories) {
+      const defRef = doc(collection(db, 'task_categories'));
+      batch.set(defRef, {
+        workspaceId: WORKSPACE_ID,
+        name: sanitizeText(def.name, VALIDATION_LIMITS.TASK_CATEGORY_MAX),
+        sortOrder: Math.min(Math.max(0, def.sortOrder), 10000),
+        createdByUid: actor.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  }
+
+  const nextSortOrder =
+    currentCategories.length > 0
+      ? Math.min(Math.max(...currentCategories.map((c) => c.sortOrder)) + 1, 10000)
+      : 0;
+
+  const catRef = doc(collection(db, 'task_categories'));
+  batch.set(catRef, {
+    workspaceId: WORKSPACE_ID,
+    name: cleanName,
+    sortOrder: nextSortOrder,
+    createdByUid: actor.uid,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  const auditRef = doc(collection(db, 'audit_logs'));
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'task',
+      entityId: catRef.id,
+      action: 'create',
+      summary: `Criada categoria de atividade "${cleanName}"`,
+      actor,
+      changedFields: ['name', 'sortOrder'],
+    })
+  );
+
+  try {
+    await batch.commit();
+    return cleanName;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `task_categories/${catRef.id}`);
+  }
+}
+
+export async function renameTaskCategoryWithAudit(
+  actor: ActorContext,
+  target: TaskCategoryRecord,
+  newName: string,
+  currentCategories: TaskCategoryRecord[],
+  allTasks: TransitionTask[]
+): Promise<string> {
+  const cleanName = normalizeTaskCategoryName(newName);
+  if (cleanName === target.name) {
+    return cleanName;
+  }
+
+  const duplicate = currentCategories.some(
+    (c) => c.id !== target.id && c.name.trim().toLowerCase() === cleanName.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error('Já existe outra categoria com este nome.');
+  }
+
+  const affectedTasks = allTasks.filter((t) => t.category === target.name);
+  const firstBatchTaskLimit = 380;
+  const firstTaskChunk = affectedTasks.slice(0, firstBatchTaskLimit);
+  const remainingTasks = affectedTasks.slice(firstBatchTaskLimit);
+
+  const batch = writeBatch(db);
+  const needsVirtualSeed =
+    target.isVirtualDefault ||
+    (currentCategories.length > 0 && currentCategories.every((c) => c.isVirtualDefault));
+
+  let auditEntityId = target.id;
+
+  if (needsVirtualSeed) {
+    for (const def of currentCategories) {
+      const defRef = doc(collection(db, 'task_categories'));
+      const resolvedName = def.id === target.id ? cleanName : def.name;
+      if (def.id === target.id) {
+        auditEntityId = defRef.id;
+      }
+      batch.set(defRef, {
+        workspaceId: WORKSPACE_ID,
+        name: sanitizeText(resolvedName, VALIDATION_LIMITS.TASK_CATEGORY_MAX),
+        sortOrder: Math.min(Math.max(0, def.sortOrder), 10000),
+        createdByUid: actor.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } else {
+    batch.update(doc(db, 'task_categories', target.id), {
+      name: cleanName,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  for (const task of firstTaskChunk) {
+    batch.update(doc(db, 'tasks', task.id), {
+      category: cleanName,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  const auditRef = doc(collection(db, 'audit_logs'));
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'task',
+      entityId: auditEntityId,
+      action: 'update',
+      summary:
+        affectedTasks.length > 0
+          ? `Renomeada categoria "${target.name}" para "${cleanName}" (${affectedTasks.length} atividade(s) atualizada(s))`
+          : `Renomeada categoria "${target.name}" para "${cleanName}"`,
+      actor,
+      changedFields: affectedTasks.length > 0 ? ['name', 'category'] : ['name'],
+    })
+  );
+
+  try {
+    await batch.commit();
+
+    for (let i = 0; i < remainingTasks.length; i += 400) {
+      const chunk = remainingTasks.slice(i, i + 400);
+      const extraBatch = writeBatch(db);
+      for (const task of chunk) {
+        extraBatch.update(doc(db, 'tasks', task.id), {
+          category: cleanName,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await extraBatch.commit();
+    }
+
+    return cleanName;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `task_categories/${target.id}`);
+  }
+}
+
+export async function deleteTaskCategoryWithAudit(
+  actor: ActorContext,
+  target: TaskCategoryRecord,
+  currentCategories: TaskCategoryRecord[]
+): Promise<void> {
+  if (currentCategories.length <= 1) {
+    throw new Error('Mantenha pelo menos 1 categoria ativa para classificar as atividades.');
+  }
+
+  const batch = writeBatch(db);
+  const needsVirtualSeed =
+    target.isVirtualDefault ||
+    (currentCategories.length > 0 && currentCategories.every((c) => c.isVirtualDefault));
+
+  if (needsVirtualSeed) {
+    for (const def of currentCategories) {
+      if (def.id === target.id) continue;
+      const defRef = doc(collection(db, 'task_categories'));
+      batch.set(defRef, {
+        workspaceId: WORKSPACE_ID,
+        name: sanitizeText(def.name, VALIDATION_LIMITS.TASK_CATEGORY_MAX),
+        sortOrder: Math.min(Math.max(0, def.sortOrder), 10000),
+        createdByUid: actor.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } else {
+    batch.delete(doc(db, 'task_categories', target.id));
+  }
+
+  const auditRef = doc(collection(db, 'audit_logs'));
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'task',
+      entityId: target.id,
+      action: 'delete',
+      summary: `Excluída categoria de atividade "${target.name}"`,
+      actor,
+      changedFields: ['deleted'],
+    })
+  );
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `task_categories/${target.id}`);
   }
 }
 

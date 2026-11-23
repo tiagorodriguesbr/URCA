@@ -48,7 +48,7 @@ export const TASK_CATEGORIES = [
   'Jurídico & Contábil',
   'Operacional',
 ] as const;
-export type TaskCategory = (typeof TASK_CATEGORIES)[number];
+export type TaskCategory = string;
 
 export const TASK_STATUSES = ['pendente', 'em_andamento', 'concluido'] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -104,6 +104,8 @@ export const VALIDATION_LIMITS = {
   TASK_TITLE_MIN: 2,
   TASK_TITLE_MAX: 140,
   TASK_DESC_MAX: 1000,
+  TASK_CATEGORY_MIN: 2,
+  TASK_CATEGORY_MAX: 60,
   TASK_ASSIGNEE_MAX: 240,
   TASK_ASSIGNEES_MAX_COUNT: 10,
   PAYMENT_DESC_MIN: 2,
@@ -179,6 +181,17 @@ export interface TransitionTask {
   createdAt?: unknown;
   updatedAt?: unknown;
   hasPendingWrites?: boolean;
+}
+
+export interface TaskCategoryRecord {
+  id: string;
+  workspaceId: typeof WORKSPACE_ID;
+  name: string;
+  sortOrder: number;
+  createdByUid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  isVirtualDefault?: boolean;
 }
 
 export interface TransitionPayment {
@@ -351,7 +364,13 @@ export function validateTaskPayload(input: {
   if (!VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.dueDate)) {
     return 'Informe uma data limite válida no formato AAAA-MM-DD.';
   }
-  if (!TASK_CATEGORIES.includes(input.category)) return 'Categoria inválida.';
+  const category = input.category.trim();
+  if (
+    category.length < VALIDATION_LIMITS.TASK_CATEGORY_MIN ||
+    category.length > VALIDATION_LIMITS.TASK_CATEGORY_MAX
+  ) {
+    return `A categoria deve ter entre ${VALIDATION_LIMITS.TASK_CATEGORY_MIN} e ${VALIDATION_LIMITS.TASK_CATEGORY_MAX} caracteres.`;
+  }
   if (!TASK_STATUSES.includes(input.status)) return 'Status inválido.';
   if (!TASK_PRIORITIES.includes(input.priority)) return 'Prioridade inválida.';
   return null;
